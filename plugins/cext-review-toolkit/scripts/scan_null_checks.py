@@ -21,7 +21,7 @@ from tree_sitter_utils import (
 )
 from scan_common import (
     find_project_root, discover_c_files, load_api_tables,
-    find_assigned_variable, PYARG_PARSE_APIS,
+    find_assigned_variable, PYARG_PARSE_APIS, parse_common_args,
 )
 
 
@@ -226,20 +226,7 @@ def analyze(target: str, *, max_files: int = 0) -> dict:
 
 def main() -> None:
     try:
-        max_files = 0
-        positional: list[str] = []
-        argv = sys.argv[1:]
-        i = 0
-        while i < len(argv):
-            if argv[i] == "--max-files" and i + 1 < len(argv):
-                max_files = int(argv[i + 1])
-                i += 2
-            elif argv[i].startswith("--"):
-                i += 1
-            else:
-                positional.append(argv[i])
-                i += 1
-        target = positional[0] if positional else "."
+        target, max_files = parse_common_args(sys.argv[1:])
         result = analyze(target, max_files=max_files)
         json.dump(result, sys.stdout, indent=2)
         sys.stdout.write("\n")
