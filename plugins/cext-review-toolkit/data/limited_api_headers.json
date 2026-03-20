@@ -1,0 +1,25 @@
+{
+  "_comment": "Headers available when Py_LIMITED_API is defined",
+  "allowed_headers": [
+    "Python.h",
+    "abstract.h", "bltinmodule.h", "boolobject.h", "bytearrayobject.h",
+    "bytesobject.h", "cellobject.h", "ceval.h", "codecs.h",
+    "compile.h", "complexobject.h", "datetime.h", "descrobject.h",
+    "dictobject.h", "dynamic_annotations.h", "enumobject.h",
+    "eval.h", "fileobject.h", "fileutils.h", "floatobject.h",
+    "frameobject.h", "funcobject.h", "import.h", "intrcheck.h",
+    "iterobject.h", "listobject.h", "longobject.h", "marshal.h",
+    "memoryobject.h", "methodobject.h", "modsupport.h", "moduleobject.h",
+    "object.h", "objimpl.h", "osmodule.h", "patchlevel.h",
+    "pyerrors.h", "pyhash.h", "pylifecycle.h", "pymacconfig.h",
+    "pymacro.h", "pymath.h", "pymem.h", "pyport.h",
+    "pystate.h", "pystrcmp.h", "pystrtod.h", "pythonrun.h",
+    "pythread.h", "rangeobject.h", "setobject.h", "sliceobject.h",
+    "structmember.h", "structseq.h", "sysmodule.h", "traceback.h",
+    "tupleobject.h", "typeslots.h", "unicodeobject.h", "warnings.h",
+    "weakrefobject.h"
+  ],
+  "forbidden_header_patterns": [
+    "cpython/", "internal/"
+  ]
+}

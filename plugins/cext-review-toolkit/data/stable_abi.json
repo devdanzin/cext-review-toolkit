@@ -1,0 +1,40 @@
+{
+  "_comment": "Subset of stable ABI functions. Full list should be generated from CPython Misc/stable_abi.toml",
+  "version": "3.12",
+  "functions": [
+    "Py_Initialize", "Py_Finalize", "Py_IsInitialized",
+    "PyMem_Malloc", "PyMem_Realloc", "PyMem_Free",
+    "Py_IncRef", "Py_DecRef",
+    "PyObject_Call", "PyObject_GetAttr", "PyObject_SetAttr",
+    "PyObject_GetAttrString", "PyObject_SetAttrString",
+    "PyObject_GetItem", "PyObject_SetItem",
+    "PyObject_Repr", "PyObject_Str", "PyObject_Hash",
+    "PyObject_IsTrue", "PyObject_RichCompare",
+    "PyType_FromSpec", "PyType_FromSpecWithBases",
+    "PyLong_FromLong", "PyLong_AsLong",
+    "PyFloat_FromDouble", "PyFloat_AsDouble",
+    "PyUnicode_FromString", "PyUnicode_AsUTF8AndSize",
+    "PyBytes_FromString", "PyBytes_FromStringAndSize",
+    "PyBytes_AsString", "PyBytes_Size",
+    "PyList_New", "PyList_GetItem", "PyList_SetItem", "PyList_Size", "PyList_Append",
+    "PyTuple_New", "PyTuple_GetItem", "PyTuple_SetItem", "PyTuple_Size",
+    "PyDict_New", "PyDict_GetItem", "PyDict_SetItem", "PyDict_Size",
+    "PyModule_Create2", "PyModule_AddObjectRef",
+    "PyArg_ParseTuple", "PyArg_ParseTupleAndKeywords",
+    "Py_BuildValue",
+    "PyErr_SetString", "PyErr_Format", "PyErr_Occurred", "PyErr_Clear",
+    "PyErr_NewException",
+    "PyGILState_Ensure", "PyGILState_Release",
+    "PyCapsule_New", "PyCapsule_GetPointer"
+  ],
+  "types_with_stable_layout": [
+    "PyObject", "PyVarObject", "PyModuleDef", "PyMethodDef",
+    "PyMemberDef", "PyGetSetDef", "PyType_Spec", "PyType_Slot",
+    "Py_buffer"
+  ],
+  "types_without_stable_layout": [
+    "PyLongObject", "PyListObject", "PyTupleObject", "PyDictObject",
+    "PySetObject", "PyBytesObject", "PyUnicodeObject", "PyFloatObject",
+    "PyTypeObject", "PyFrameObject", "PyCodeObject", "PyFunctionObject"
+  ]
+}
