@@ -22,7 +22,7 @@ from tree_sitter_utils import (
 )
 from scan_common import (
     find_project_root, discover_c_files, load_api_tables,
-    find_assigned_variable, PYARG_PARSE_APIS,
+    find_assigned_variable, PYARG_PARSE_APIS, parse_common_args,
 )
 
 
@@ -129,16 +129,32 @@ def _check_return_without_exception(func, source_bytes, api_tables):
         if has_err_set:
             continue
 
-        # Check if a preceding API call sets the exception on failure
-        # (new-ref APIs set exception before returning NULL).
+        # Check if this error return is inside a NULL-check block for an API
+        # that sets its own exception. Only suppress if the return is guarded
+        # by a condition testing a variable from an exception-setting API.
         has_api_err = False
-        for ac in all_calls:
-            if ac["start_byte"] >= ret_byte:
+        parent = ret["node"].parent
+        while parent and parent != body:
+            if parent.type == "if_statement":
+                cond = parent.child_by_field_name("condition")
+                if cond:
+                    cond_text = get_node_text(cond, source_bytes)
+                    if re.search(r'==\s*NULL|!\s*\w', cond_text):
+                        for ac in all_calls:
+                            if ac["start_byte"] >= ret_byte:
+                                break
+                            if ac["function_name"] in new_ref_apis or \
+                               ac["function_name"] in PYARG_PARSE_APIS:
+                                var = find_assigned_variable(
+                                    ac["node"], source_bytes)
+                                if var and re.search(
+                                    r'\b' + re.escape(var) + r'\b',
+                                    cond_text,
+                                ):
+                                    has_api_err = True
+                                    break
                 break
-            if ac["function_name"] in new_ref_apis or \
-               ac["function_name"] in PYARG_PARSE_APIS:
-                has_api_err = True
-                break
+            parent = parent.parent
 
         if has_api_err:
             continue
@@ -186,10 +202,10 @@ def _check_exception_clobbering(func, source_bytes, api_tables):
         calls_in_block = find_calls_in_scope(consequence, source_bytes)
         for call in calls_in_block:
             fn = call["function_name"]
-            if fn in _CLEANUP_APIS:
+            if fn in _CLEANUP_APIS or fn in _PYERR_SET_APIS:
                 continue
-            if fn.startswith("Py") and fn not in _CLEANUP_APIS:
-                # Non-cleanup Python API in error path.
+            if fn.startswith("Py") or fn.startswith("_Py"):
+                # Non-cleanup, non-error-setting Python API in error path.
                 findings.append({
                     "type": "exception_clobbering",
                     "file": "",
@@ -306,20 +322,7 @@ def analyze(target: str, *, max_files: int = 0) -> dict:
 
 def main() -> None:
     try:
-        max_files = 0
-        positional: list[str] = []
-        argv = sys.argv[1:]
-        i = 0
-        while i < len(argv):
-            if argv[i] == "--max-files" and i + 1 < len(argv):
-                max_files = int(argv[i + 1])
-                i += 2
-            elif argv[i].startswith("--"):
-                i += 1
-            else:
-                positional.append(argv[i])
-                i += 1
-        target = positional[0] if positional else "."
+        target, max_files = parse_common_args(sys.argv[1:])
         result = analyze(target, max_files=max_files)
         json.dump(result, sys.stdout, indent=2)
         sys.stdout.write("\n")

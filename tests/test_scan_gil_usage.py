@@ -108,6 +108,36 @@ def test_free_threading_concern():
         assert "free_threading_concern" in types
 
 
+CALLBACK_WITHOUT_GIL = """\
+#include <Python.h>
+
+static void
+my_callback(void *data)
+{
+    PyObject *result = PyLong_FromLong(42);
+    Py_XDECREF(result);
+}
+
+static PyObject *
+setup_callback(PyObject *self, PyObject *args)
+{
+    register_handler(my_callback, NULL);
+    Py_RETURN_NONE;
+}
+"""
+
+
+def test_callback_without_gil():
+    """Detect callback function calling Python APIs without GIL."""
+    with TempExtension({"cb.c": CALLBACK_WITHOUT_GIL}) as root:
+        result = gil.analyze(str(root / "cb.c"))
+        types = [f["type"] for f in result["findings"]]
+        assert "callback_without_gil" in types
+        cb_findings = [f for f in result["findings"]
+                       if f["type"] == "callback_without_gil"]
+        assert cb_findings[0]["function"] == "my_callback"
+
+
 def test_minimal_extension_runs():
     """Script runs without error on minimal extension."""
     with TempExtension({"myext.c": MINIMAL_EXTENSION}) as root:

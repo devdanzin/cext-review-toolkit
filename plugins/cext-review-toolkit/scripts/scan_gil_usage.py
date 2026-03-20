@@ -20,7 +20,7 @@ from tree_sitter_utils import (
     extract_static_declarations,
     get_node_text, walk_descendants, strip_comments,
 )
-from scan_common import find_project_root, discover_c_files
+from scan_common import find_project_root, discover_c_files, parse_common_args
 
 
 _BLOCKING_CALLS = {
@@ -163,6 +163,51 @@ def _check_mismatched_gilstate(func, source_bytes):
     return findings
 
 
+def _check_callback_without_gil(functions, source_bytes):
+    """Check for functions used as callbacks that call Python APIs without GIL."""
+    findings = []
+
+    callback_candidates = set()
+    all_func_names = {f["name"] for f in functions}
+
+    for func in functions:
+        body = func["body_node"]
+        calls = find_calls_in_scope(body, source_bytes)
+        for call in calls:
+            fn = call["function_name"]
+            if fn.startswith("Py") or fn.startswith("_Py"):
+                continue
+            args_text = call["arguments_text"]
+            for candidate in all_func_names:
+                if re.search(r'\b' + re.escape(candidate) + r'\b', args_text):
+                    callback_candidates.add(candidate)
+
+    for func in functions:
+        if func["name"] not in callback_candidates:
+            continue
+
+        body_text = func["body"]
+        has_python_calls = bool(re.search(r'\bPy[A-Z]\w+\s*\(', body_text))
+        if not has_python_calls:
+            continue
+
+        if "PyGILState_Ensure" in body_text:
+            continue
+
+        findings.append({
+            "type": "callback_without_gil",
+            "file": "",
+            "function": func["name"],
+            "line": func["start_line"],
+            "confidence": "medium",
+            "detail": (f"Function '{func['name']}' appears to be used as a "
+                       f"callback to a foreign library and calls Python APIs "
+                       f"without PyGILState_Ensure"),
+        })
+
+    return findings
+
+
 def _check_free_threading(tree, source_bytes):
     """Check for free-threading concerns (static mutable state, missing Py_mod_gil)."""
     findings = []
@@ -243,6 +288,9 @@ def analyze(target: str, *, max_files: int = 0) -> dict:
                     findings.append(f)
 
         # File-level checks.
+        for f in _check_callback_without_gil(functions, source_bytes):
+            f["file"] = rel
+            findings.append(f)
         for f in _check_free_threading(tree, source_bytes):
             f["file"] = rel
             findings.append(f)
@@ -271,20 +319,7 @@ def analyze(target: str, *, max_files: int = 0) -> dict:
 
 def main() -> None:
     try:
-        max_files = 0
-        positional: list[str] = []
-        argv = sys.argv[1:]
-        i = 0
-        while i < len(argv):
-            if argv[i] == "--max-files" and i + 1 < len(argv):
-                max_files = int(argv[i + 1])
-                i += 2
-            elif argv[i].startswith("--"):
-                i += 1
-            else:
-                positional.append(argv[i])
-                i += 1
-        target = positional[0] if positional else "."
+        target, max_files = parse_common_args(sys.argv[1:])
         result = analyze(target, max_files=max_files)
         json.dump(result, sys.stdout, indent=2)
         sys.stdout.write("\n")

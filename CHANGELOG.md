@@ -18,3 +18,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `migrate` command for extension modernization checklists (multi-phase init, stable ABI, version compat).
 - Shared script utilities module (`scan_common.py`) for project root detection, file discovery, API table loading.
 - Test infrastructure with TempExtension helper, 4 C code fixtures, 1 setup.py template, and 80+ tests.
+
+### Fixed
+- `_check_return_without_exception` false negative: now only suppresses finding when error return is inside a NULL-check block for an exception-setting API.
+- `_check_exception_clobbering` false positive: no longer flags `PyErr_SetString` and other exception-setting APIs as clobbering.
+- `_check_borrowed_ref_across_call` now detects non-call usage (member access, dereference, assignment) of borrowed refs after intervening Python calls.
+- Heap type DECREF check now matches specific DECREF patterns instead of any `Py_TYPE(self)` mention.
+- All scanner `main()` functions now use shared `parse_common_args()`.
+- Added `callback_without_gil` detection to `scan_gil_usage.py`.
