@@ -1,6 +1,6 @@
 """Tests for scan_gil_usage.py — GIL discipline analysis."""
 
-import pytest
+import unittest
 from helpers import import_script, TempExtension, MINIMAL_EXTENSION
 
 gil = import_script("scan_gil_usage")
@@ -45,20 +45,6 @@ blocking_func(PyObject *self, PyObject *args)
 }
 """
 
-CORRECT_GIL = """\
-#include <Python.h>
-
-static PyObject *
-correct_func(PyObject *self, PyObject *args)
-{
-    int result;
-    Py_BEGIN_ALLOW_THREADS
-    result = some_blocking_call();
-    Py_END_ALLOW_THREADS
-    return PyLong_FromLong(result);
-}
-"""
-
 GLOBAL_PYOBJECT = """\
 #include <Python.h>
 
@@ -74,39 +60,6 @@ get_cache(PyObject *self, PyObject *args)
     return cache;
 }
 """
-
-
-def test_mismatched_allow_threads():
-    """Detect mismatched BEGIN/END_ALLOW_THREADS."""
-    with TempExtension({"bad.c": MISMATCHED_GIL}) as root:
-        result = gil.analyze(str(root / "bad.c"))
-        types = [f["type"] for f in result["findings"]]
-        assert "mismatched_allow_threads" in types
-
-
-def test_api_without_gil():
-    """Detect Python API call in GIL-released region."""
-    with TempExtension({"api.c": API_WITHOUT_GIL}) as root:
-        result = gil.analyze(str(root / "api.c"))
-        types = [f["type"] for f in result["findings"]]
-        assert "api_without_gil" in types
-
-
-def test_blocking_with_gil():
-    """Detect blocking call with GIL held."""
-    with TempExtension({"block.c": BLOCKING_WITH_GIL}) as root:
-        result = gil.analyze(str(root / "block.c"))
-        types = [f["type"] for f in result["findings"]]
-        assert "blocking_with_gil" in types
-
-
-def test_free_threading_concern():
-    """Detect static mutable PyObject* as free-threading concern."""
-    with TempExtension({"global.c": GLOBAL_PYOBJECT}) as root:
-        result = gil.analyze(str(root / "global.c"))
-        types = [f["type"] for f in result["findings"]]
-        assert "free_threading_concern" in types
-
 
 CALLBACK_WITHOUT_GIL = """\
 #include <Python.h>
@@ -127,20 +80,54 @@ setup_callback(PyObject *self, PyObject *args)
 """
 
 
-def test_callback_without_gil():
-    """Detect callback function calling Python APIs without GIL."""
-    with TempExtension({"cb.c": CALLBACK_WITHOUT_GIL}) as root:
-        result = gil.analyze(str(root / "cb.c"))
-        types = [f["type"] for f in result["findings"]]
-        assert "callback_without_gil" in types
-        cb_findings = [f for f in result["findings"]
-                       if f["type"] == "callback_without_gil"]
-        assert cb_findings[0]["function"] == "my_callback"
+class TestScanGilUsage(unittest.TestCase):
+    """Test GIL discipline analysis."""
+
+    def test_mismatched_allow_threads(self):
+        """Detect mismatched BEGIN/END_ALLOW_THREADS."""
+        with TempExtension({"bad.c": MISMATCHED_GIL}) as root:
+            result = gil.analyze(str(root / "bad.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("mismatched_allow_threads", types)
+
+    def test_api_without_gil(self):
+        """Detect Python API call in GIL-released region."""
+        with TempExtension({"api.c": API_WITHOUT_GIL}) as root:
+            result = gil.analyze(str(root / "api.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("api_without_gil", types)
+
+    def test_blocking_with_gil(self):
+        """Detect blocking call with GIL held."""
+        with TempExtension({"block.c": BLOCKING_WITH_GIL}) as root:
+            result = gil.analyze(str(root / "block.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("blocking_with_gil", types)
+
+    def test_free_threading_concern(self):
+        """Detect static mutable PyObject* as free-threading concern."""
+        with TempExtension({"global.c": GLOBAL_PYOBJECT}) as root:
+            result = gil.analyze(str(root / "global.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("free_threading_concern", types)
+
+    def test_callback_without_gil(self):
+        """Detect callback function calling Python APIs without GIL."""
+        with TempExtension({"cb.c": CALLBACK_WITHOUT_GIL}) as root:
+            result = gil.analyze(str(root / "cb.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("callback_without_gil", types)
+            cb_findings = [f for f in result["findings"]
+                           if f["type"] == "callback_without_gil"]
+            self.assertEqual(cb_findings[0]["function"], "my_callback")
+
+    def test_minimal_extension_runs(self):
+        """Script runs without error on minimal extension."""
+        with TempExtension({"myext.c": MINIMAL_EXTENSION}) as root:
+            result = gil.analyze(str(root / "myext.c"))
+            self.assertIn("findings", result)
+            self.assertIn("summary", result)
 
 
-def test_minimal_extension_runs():
-    """Script runs without error on minimal extension."""
-    with TempExtension({"myext.c": MINIMAL_EXTENSION}) as root:
-        result = gil.analyze(str(root / "myext.c"))
-        assert "findings" in result
-        assert "summary" in result
+if __name__ == "__main__":
+    unittest.main()

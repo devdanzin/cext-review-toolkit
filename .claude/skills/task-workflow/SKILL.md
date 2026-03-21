@@ -42,7 +42,7 @@ Read existing code before modifying it. Follow patterns already established in t
 - Double quotes for strings
 - Complete type hints on all functions
 - Docstrings on classes and public methods
-- Tests use `pytest` — no unittest
+- Tests use `unittest` with `unittest.TestCase` classes
 - Add an entry to `CHANGELOG.md` under `## [Unreleased]` in the appropriate section (Added/Enhanced/Fixed/Documentation). Format: `- Description.`
 
 ## Step 4: Verify
@@ -55,7 +55,7 @@ Important: The `.venv` uses a JIT-enabled CPython build with AddressSanitizer. A
 ASAN_OPTIONS=detect_leaks=0 PYTHON_JIT=0 .venv/bin/ruff format <changed-files>
 ASAN_OPTIONS=detect_leaks=0 PYTHON_JIT=0 .venv/bin/ruff check <changed-files>
 ASAN_OPTIONS=detect_leaks=0 PYTHON_JIT=0 .venv/bin/mypy
-ASAN_OPTIONS=detect_leaks=0 PYTHON_JIT=0 .venv/bin/python -m pytest tests/ -v
+ASAN_OPTIONS=detect_leaks=0 PYTHON_JIT=0 .venv/bin/python -m unittest discover tests -v
 ```
 
 If any tests fail, fix them before proceeding. If `ruff format` changes files, that's fine — they'll be committed in the next step.

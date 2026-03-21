@@ -1,6 +1,6 @@
 """Tests for scan_error_paths.py — error handling analysis."""
 
-import pytest
+import unittest
 from helpers import import_script, TempExtension, MINIMAL_EXTENSION, EXTENSION_WITH_BUGS
 
 error_paths = import_script("scan_error_paths")
@@ -46,58 +46,6 @@ clean_func(PyObject *self, PyObject *args)
 }
 """
 
-
-def test_missing_null_check():
-    """Detect missing NULL check after API call."""
-    with TempExtension({"nocheck.c": MISSING_NULL_CHECK_CODE}) as root:
-        result = error_paths.analyze(str(root / "nocheck.c"))
-        types = [f["type"] for f in result["findings"]]
-        assert "missing_null_check" in types
-
-
-def test_unchecked_pyarg_parse():
-    """Detect unchecked PyArg_ParseTuple."""
-    with TempExtension({"parse.c": UNCHECKED_PARSE}) as root:
-        result = error_paths.analyze(str(root / "parse.c"))
-        types = [f["type"] for f in result["findings"]]
-        assert "unchecked_pyarg_parse" in types
-
-
-def test_clean_error_handling_minimal_findings():
-    """Clean error handling produces no major findings."""
-    with TempExtension({"clean.c": CLEAN_ERROR_HANDLING}) as root:
-        result = error_paths.analyze(str(root / "clean.c"))
-        unchecked = [f for f in result["findings"]
-                     if f["type"] == "unchecked_pyarg_parse"]
-        assert len(unchecked) == 0
-
-
-def test_extension_with_bugs():
-    """EXTENSION_WITH_BUGS should trigger findings."""
-    with TempExtension({"buggy.c": EXTENSION_WITH_BUGS}) as root:
-        result = error_paths.analyze(str(root / "buggy.c"))
-        assert result["functions_analyzed"] >= 3
-        assert len(result["findings"]) >= 1
-
-
-def test_minimal_extension_runs():
-    """Script runs without error on minimal extension."""
-    with TempExtension({"myext.c": MINIMAL_EXTENSION}) as root:
-        result = error_paths.analyze(str(root / "myext.c"))
-        assert "findings" in result
-        assert "summary" in result
-
-
-def test_output_has_file_field():
-    """Each finding has a file field."""
-    with TempExtension({"buggy.c": EXTENSION_WITH_BUGS}) as root:
-        result = error_paths.analyze(str(root / "buggy.c"))
-        for f in result["findings"]:
-            assert "file" in f
-            assert "line" in f
-            assert "confidence" in f
-
-
 RETURN_WITHOUT_EXCEPTION = """\
 #include <Python.h>
 
@@ -127,17 +75,68 @@ clobber(PyObject *self, PyObject *args)
 """
 
 
-def test_return_without_exception():
-    """Detect return NULL without setting an exception."""
-    with TempExtension({"noexc.c": RETURN_WITHOUT_EXCEPTION}) as root:
-        result = error_paths.analyze(str(root / "noexc.c"))
-        types = [f["type"] for f in result["findings"]]
-        assert "return_without_exception" in types
+class TestScanErrorPaths(unittest.TestCase):
+    """Test error handling bug detection."""
+
+    def test_missing_null_check(self):
+        """Detect missing NULL check after API call."""
+        with TempExtension({"nocheck.c": MISSING_NULL_CHECK_CODE}) as root:
+            result = error_paths.analyze(str(root / "nocheck.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("missing_null_check", types)
+
+    def test_unchecked_pyarg_parse(self):
+        """Detect unchecked PyArg_ParseTuple."""
+        with TempExtension({"parse.c": UNCHECKED_PARSE}) as root:
+            result = error_paths.analyze(str(root / "parse.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("unchecked_pyarg_parse", types)
+
+    def test_clean_error_handling_minimal_findings(self):
+        """Clean error handling produces no major findings."""
+        with TempExtension({"clean.c": CLEAN_ERROR_HANDLING}) as root:
+            result = error_paths.analyze(str(root / "clean.c"))
+            unchecked = [f for f in result["findings"]
+                         if f["type"] == "unchecked_pyarg_parse"]
+            self.assertEqual(len(unchecked), 0)
+
+    def test_extension_with_bugs(self):
+        """EXTENSION_WITH_BUGS should trigger findings."""
+        with TempExtension({"buggy.c": EXTENSION_WITH_BUGS}) as root:
+            result = error_paths.analyze(str(root / "buggy.c"))
+            self.assertGreaterEqual(result["functions_analyzed"], 3)
+            self.assertGreaterEqual(len(result["findings"]), 1)
+
+    def test_minimal_extension_runs(self):
+        """Script runs without error on minimal extension."""
+        with TempExtension({"myext.c": MINIMAL_EXTENSION}) as root:
+            result = error_paths.analyze(str(root / "myext.c"))
+            self.assertIn("findings", result)
+            self.assertIn("summary", result)
+
+    def test_output_has_file_field(self):
+        """Each finding has a file field."""
+        with TempExtension({"buggy.c": EXTENSION_WITH_BUGS}) as root:
+            result = error_paths.analyze(str(root / "buggy.c"))
+            for f in result["findings"]:
+                self.assertIn("file", f)
+                self.assertIn("line", f)
+                self.assertIn("confidence", f)
+
+    def test_return_without_exception(self):
+        """Detect return NULL without setting an exception."""
+        with TempExtension({"noexc.c": RETURN_WITHOUT_EXCEPTION}) as root:
+            result = error_paths.analyze(str(root / "noexc.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("return_without_exception", types)
+
+    def test_exception_clobbering(self):
+        """Detect Python API call in error handling block."""
+        with TempExtension({"clobber.c": EXCEPTION_CLOBBERING}) as root:
+            result = error_paths.analyze(str(root / "clobber.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("exception_clobbering", types)
 
 
-def test_exception_clobbering():
-    """Detect Python API call in error handling block."""
-    with TempExtension({"clobber.c": EXCEPTION_CLOBBERING}) as root:
-        result = error_paths.analyze(str(root / "clobber.c"))
-        types = [f["type"] for f in result["findings"]]
-        assert "exception_clobbering" in types
+if __name__ == "__main__":
+    unittest.main()

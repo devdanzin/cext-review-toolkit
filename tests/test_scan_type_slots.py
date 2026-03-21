@@ -1,7 +1,7 @@
 """Tests for scan_type_slots.py — type definition analysis."""
 
-import pytest
-from helpers import import_script, TempExtension, MINIMAL_EXTENSION, EXTENSION_WITH_TYPE
+import unittest
+from helpers import import_script, TempExtension, EXTENSION_WITH_TYPE
 
 type_slots = import_script("scan_type_slots")
 
@@ -96,54 +96,56 @@ static PyTypeObject MyObjType = {
 """
 
 
-def test_dealloc_missing_tp_free():
-    """Detect dealloc using PyObject_Del instead of tp_free."""
-    with TempExtension({"buggy.c": BUGGY_TYPE}) as root:
-        result = type_slots.analyze(str(root / "buggy.c"))
-        types = [f["type"] for f in result["findings"]]
-        assert "dealloc_wrong_free" in types
+class TestScanTypeSlots(unittest.TestCase):
+    """Test type definition correctness analysis."""
+
+    def test_dealloc_missing_tp_free(self):
+        """Detect dealloc using PyObject_Del instead of tp_free."""
+        with TempExtension({"buggy.c": BUGGY_TYPE}) as root:
+            result = type_slots.analyze(str(root / "buggy.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("dealloc_wrong_free", types)
+
+    def test_dealloc_missing_untrack(self):
+        """Detect dealloc missing PyObject_GC_UnTrack."""
+        with TempExtension({"buggy.c": BUGGY_TYPE}) as root:
+            result = type_slots.analyze(str(root / "buggy.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("dealloc_missing_untrack", types)
+
+    def test_traverse_missing_member(self):
+        """Detect traverse not visiting all PyObject* members."""
+        with TempExtension({"buggy.c": BUGGY_TYPE}) as root:
+            result = type_slots.analyze(str(root / "buggy.c"))
+            missing = [f for f in result["findings"]
+                       if f["type"] == "traverse_missing_member"]
+            self.assertGreaterEqual(len(missing), 1)
+            members = [f["missing_member"] for f in missing]
+            self.assertIn("callback", members)
+
+    def test_correct_type_minimal_findings(self):
+        """Correct type should have no dealloc or traverse findings."""
+        with TempExtension({"good.c": CORRECT_TYPE}) as root:
+            result = type_slots.analyze(str(root / "good.c"))
+            bad = [f for f in result["findings"]
+                   if f["type"] in ("dealloc_missing_tp_free", "dealloc_wrong_free",
+                                     "dealloc_missing_untrack", "traverse_missing_member")]
+            self.assertEqual(len(bad), 0)
+
+    def test_richcompare_not_incref(self):
+        """Detect missing Py_INCREF(Py_NotImplemented)."""
+        with TempExtension({"rich.c": RICHCOMPARE_BUG}) as root:
+            result = type_slots.analyze(str(root / "rich.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("richcompare_not_incref_notimplemented", types)
+
+    def test_extension_with_type_runs(self):
+        """Script runs on EXTENSION_WITH_TYPE fixture."""
+        with TempExtension({"typed.c": EXTENSION_WITH_TYPE}) as root:
+            result = type_slots.analyze(str(root / "typed.c"))
+            self.assertIn("findings", result)
+            self.assertIn("summary", result)
 
 
-def test_dealloc_missing_untrack():
-    """Detect dealloc missing PyObject_GC_UnTrack."""
-    with TempExtension({"buggy.c": BUGGY_TYPE}) as root:
-        result = type_slots.analyze(str(root / "buggy.c"))
-        types = [f["type"] for f in result["findings"]]
-        assert "dealloc_missing_untrack" in types
-
-
-def test_traverse_missing_member():
-    """Detect traverse not visiting all PyObject* members."""
-    with TempExtension({"buggy.c": BUGGY_TYPE}) as root:
-        result = type_slots.analyze(str(root / "buggy.c"))
-        missing = [f for f in result["findings"]
-                   if f["type"] == "traverse_missing_member"]
-        assert len(missing) >= 1
-        members = [f["missing_member"] for f in missing]
-        assert "callback" in members
-
-
-def test_correct_type_minimal_findings():
-    """Correct type should have no dealloc or traverse findings."""
-    with TempExtension({"good.c": CORRECT_TYPE}) as root:
-        result = type_slots.analyze(str(root / "good.c"))
-        bad = [f for f in result["findings"]
-               if f["type"] in ("dealloc_missing_tp_free", "dealloc_wrong_free",
-                                 "dealloc_missing_untrack", "traverse_missing_member")]
-        assert len(bad) == 0
-
-
-def test_richcompare_not_incref():
-    """Detect missing Py_INCREF(Py_NotImplemented)."""
-    with TempExtension({"rich.c": RICHCOMPARE_BUG}) as root:
-        result = type_slots.analyze(str(root / "rich.c"))
-        types = [f["type"] for f in result["findings"]]
-        assert "richcompare_not_incref_notimplemented" in types
-
-
-def test_extension_with_type_runs():
-    """Script runs on EXTENSION_WITH_TYPE fixture."""
-    with TempExtension({"typed.c": EXTENSION_WITH_TYPE}) as root:
-        result = type_slots.analyze(str(root / "typed.c"))
-        assert "findings" in result
-        assert "summary" in result
+if __name__ == "__main__":
+    unittest.main()
