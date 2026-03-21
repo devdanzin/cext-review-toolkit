@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Tree-sitter parsing utilities for C extension analysis.
+"""Tree-sitter parsing utilities for C/C++ extension analysis.
 
 This is the core parsing module used by all analysis scripts in
-cext-review-toolkit. It provides structured access to C source code
+cext-review-toolkit. It provides structured access to C/C++ source code
 via Tree-sitter, replacing fragile regex-based parsing.
 
 Requires: pip install tree-sitter tree-sitter-c
+Optional: pip install tree-sitter-cpp (for C++ file support)
 """
 
 import json
@@ -26,6 +27,49 @@ except ImportError:
 # Initialize the C parser once at module level.
 C_LANGUAGE = tree_sitter.Language(tree_sitter_c.language())
 _parser = tree_sitter.Parser(C_LANGUAGE)
+
+# C++ support (optional).
+_CPP_AVAILABLE = False
+_cpp_parser: tree_sitter.Parser | None = None
+
+try:
+    import tree_sitter_cpp
+    _CPP_AVAILABLE = True
+except ImportError:
+    pass
+
+C_EXTENSIONS = frozenset({".c", ".h"})
+CPP_EXTENSIONS = frozenset({".cpp", ".cxx", ".cc", ".hpp"})
+ALL_SOURCE_EXTENSIONS = C_EXTENSIONS | CPP_EXTENSIONS
+
+
+def is_cpp_available() -> bool:
+    """Check if tree-sitter-cpp is installed."""
+    return _CPP_AVAILABLE
+
+
+def _get_cpp_parser() -> tree_sitter.Parser:
+    """Lazily initialize and return the C++ parser."""
+    global _cpp_parser
+    if _cpp_parser is None:
+        if not _CPP_AVAILABLE:
+            raise ImportError("tree-sitter-cpp not installed: pip install tree-sitter-cpp")
+        cpp_language = tree_sitter.Language(tree_sitter_cpp.language())
+        _cpp_parser = tree_sitter.Parser(cpp_language)
+    return _cpp_parser
+
+
+def get_parser_for_file(filepath: Path) -> tree_sitter.Parser:
+    """Return the appropriate parser for a file based on its extension."""
+    if filepath.suffix in CPP_EXTENSIONS and _CPP_AVAILABLE:
+        return _get_cpp_parser()
+    return _parser
+
+
+def parse_bytes_for_file(source_bytes: bytes, filepath: Path) -> tree_sitter.Tree:
+    """Parse source bytes using the parser appropriate for the file type."""
+    parser = get_parser_for_file(filepath)
+    return parser.parse(source_bytes)
 
 
 def parse_file(path: Path) -> tree_sitter.Tree:
@@ -130,7 +174,20 @@ def extract_functions(tree: tree_sitter.Tree, source_bytes: bytes) -> list[dict]
     functions = []
     root = tree.root_node
 
+    # Collect top-level nodes, descending into extern "C" {} and namespace {}
+    # blocks which wrap function definitions in C++ files.
+    top_nodes = []
     for node in root.children:
+        if node.type in ("linkage_specification", "namespace_definition"):
+            body = node.child_by_field_name("body")
+            if body:
+                top_nodes.extend(body.children)
+            else:
+                top_nodes.extend(node.children)
+        else:
+            top_nodes.append(node)
+
+    for node in top_nodes:
         if node.type != "function_definition":
             continue
 

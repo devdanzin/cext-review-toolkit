@@ -30,18 +30,22 @@ def _should_skip(path: Path, root: Path) -> bool:
     return bool(parts & EXCLUDE_DIRS)
 
 
+_SOURCE_GLOBS = ("*.c", "*.cpp", "*.cxx", "*.cc")
+
+
 def _find_c_files(root: Path) -> list[Path]:
-    """Find all .c files under root, excluding common build dirs."""
+    """Find all C/C++ source files under root, excluding common build dirs."""
     result = []
     if not root.is_dir():
         return result
-    for p in sorted(root.rglob("*.c")):
-        if not p.is_file():
-            continue
-        if _should_skip(p, root):
-            continue
-        result.append(p)
-    return result
+    for pattern in _SOURCE_GLOBS:
+        for p in sorted(root.rglob(pattern)):
+            if not p.is_file():
+                continue
+            if _should_skip(p, root):
+                continue
+            result.append(p)
+    return sorted(set(result))
 
 
 def _find_h_files(root: Path, c_files: list[Path]) -> list[Path]:

@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- C++ file support via optional `tree-sitter-cpp` dependency (.cpp, .cxx, .cc files).
+- `run_external_tools.py` script wrapping clang-tidy and cppcheck with JSON envelope output.
+- Phase 0.5 in `explore.md` for automatic external tool baseline.
+- External Tool Cross-Reference sections in 4 agent prompts (null-safety, error-path, GIL, complexity).
+- `parse_bytes_for_file()` in `tree_sitter_utils.py` — auto-selects C or C++ parser by file extension.
+
+### Changed
+- `discover_c_files()` now finds C++ source files (.cpp, .cxx, .cc) when tree-sitter-cpp is installed.
+- `discover_extension.py` `_find_c_files()` now always finds C++ source files.
+- All 9 scanner scripts now use `parse_bytes_for_file()` for language-aware parsing.
+
 ## [0.1.1] - 2026-03-21
 
 ### Added

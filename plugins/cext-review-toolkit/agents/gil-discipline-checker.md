@@ -132,6 +132,17 @@ For each confirmed or likely finding, produce a structured entry:
 **Rationale**: [Why this classification was chosen]
 ```
 
+## External Tool Cross-Reference (Optional)
+
+If external tools are available:
+
+1. Run: `python <plugin_root>/scripts/run_external_tools.py [scope] --compile-commands <path>`
+2. Cross-reference findings:
+   - Thread safety annotations from clang-tidy provide GIL-independent thread safety guarantees
+   - `bugprone-use-after-move` may indicate unsafe state after GIL release/reacquire
+   - `clang-analyzer-core.StackAddressEscape` may indicate variables used across GIL boundaries
+3. External tool findings are particularly valuable for C++ extensions where our tree-sitter C parser has limited coverage
+
 ## Classification Rules
 
 - **FIX**: Python API call without the GIL held (crash or corruption). Mismatched `Py_BEGIN_ALLOW_THREADS` / `Py_END_ALLOW_THREADS` (GIL permanently released). Mismatched `PyGILState_Ensure` / `PyGILState_Release` (GIL leak or double-release). Foreign library callback that touches Python objects without GIL.

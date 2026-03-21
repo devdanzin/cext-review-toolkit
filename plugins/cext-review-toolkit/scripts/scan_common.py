@@ -21,7 +21,10 @@ except ImportError:
     sys.exit(1)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from tree_sitter_utils import get_node_text, get_declarator_name
+from tree_sitter_utils import (
+    get_node_text, get_declarator_name,
+    C_EXTENSIONS, ALL_SOURCE_EXTENSIONS, is_cpp_available,
+)
 
 
 EXCLUDE_DIRS = frozenset({
@@ -52,17 +55,23 @@ def find_project_root(start: Path) -> Path:
     return start if start.is_dir() else start.parent
 
 
+def _get_source_extensions() -> frozenset[str]:
+    """Return file extensions to scan (C only, or C+C++ if available)."""
+    return ALL_SOURCE_EXTENSIONS if is_cpp_available() else C_EXTENSIONS
+
+
 def discover_c_files(
     root: Path, *, max_files: int = 0,
 ) -> Generator[Path, None, None]:
-    """Discover C source files under root, excluding common build dirs."""
+    """Discover C/C++ source files under root, excluding common build dirs."""
+    exts = _get_source_extensions()
     count = 0
     if root.is_file():
-        if root.suffix in (".c", ".h"):
+        if root.suffix in exts:
             yield root
         return
     for p in sorted(root.rglob("*")):
-        if not p.is_file() or p.suffix not in (".c", ".h"):
+        if not p.is_file() or p.suffix not in exts:
             continue
         try:
             parts = set(p.relative_to(root).parts)

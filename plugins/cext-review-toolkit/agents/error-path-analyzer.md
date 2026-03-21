@@ -114,6 +114,18 @@ For each confirmed or likely finding, produce a structured entry:
 **Rationale**: [Why this classification was chosen]
 ```
 
+## External Tool Cross-Reference (Optional)
+
+If external tools are available:
+
+1. Run: `python <plugin_root>/scripts/run_external_tools.py [scope] --compile-commands <path>`
+2. Cross-reference findings:
+   - `clang-analyzer-core.uninitialized` confirms unchecked PyArg_Parse output variable usage
+   - `cert-err34-c` confirms missing error checks on conversion functions
+   - `bugprone-branch-clone` may reveal duplicated error handling that has diverged
+   - `clang-analyzer-deadcode.DeadStores` may identify unused error return values
+3. When both our scanner and an external tool flag the same location, upgrade confidence to HIGH
+
 ## Classification Rules
 
 - **FIX**: Missing NULL check before dereference on a reachable code path (will crash). Returning NULL or -1 without an active exception (causes `SystemError`). `PyErr_Clear` that clobbers a real exception that should propagate.

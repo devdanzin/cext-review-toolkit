@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from tree_sitter_utils import parse_bytes, extract_functions
+from tree_sitter_utils import parse_bytes_for_file, extract_functions
 from scan_common import find_project_root
 
 CLASSIFICATION_RULES: list[tuple[str, list[str]]] = [
@@ -192,7 +192,7 @@ def _get_c_function_boundaries(filepath: Path) -> list[dict]:
     """Use Tree-sitter to get C function boundaries."""
     try:
         source_bytes = filepath.read_bytes()
-        tree = parse_bytes(source_bytes)
+        tree = parse_bytes_for_file(source_bytes, filepath)
         functions = extract_functions(tree, source_bytes)
         return [
             {"name": f["name"], "line_start": f["start_line"],
