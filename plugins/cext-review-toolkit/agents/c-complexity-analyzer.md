@@ -160,6 +160,14 @@ After all findings, include a summary:
 [One paragraph on the codebase's complexity profile: is it generally well-structured with a few hotspots, or is high complexity pervasive?]
 ```
 
+## External Tool Cross-Reference (Optional)
+
+If external tools are available:
+
+1. Run: `python <plugin_root>/scripts/run_external_tools.py [scope]`
+2. Correlate: functions with high complexity AND multiple external tool findings are the strongest refactoring candidates
+3. External tool finding density per function (findings/LOC) is a useful secondary complexity metric
+
 ## Classification Rules
 
 - **FIX**: Not applicable for complexity alone. Complexity is a signal, not a bug. However, if complexity directly prevents correct implementation of a safety fix (e.g., a function is so complex that adding a missing NULL check would require restructuring), note this.

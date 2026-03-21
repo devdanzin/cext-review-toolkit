@@ -30,6 +30,7 @@ Parse arguments into three categories:
 - `compat` → version-compat-scanner
 - `complexity` → c-complexity-analyzer
 - `history` → git-history-analyzer
+- `external-tools` → run external tools only (clang-tidy, cppcheck)
 - `all` → all agents (default)
 
 **Options**:
@@ -56,6 +57,25 @@ Limited API: no
 ```
 
 If no C extension source files are found, inform the user and suggest checking the scope.
+
+### Phase 0.5: External Tool Baseline (Optional)
+
+After extension discovery, check for external tool availability:
+1. Check if `compile_commands.json` exists in the project root or common build directories (build/, _build/, builddir/)
+2. If found: run `python <plugin_root>/scripts/run_external_tools.py [scope] --compile-commands <path>`
+3. If not found: run `python <plugin_root>/scripts/run_external_tools.py [scope]` (cppcheck can still run without it)
+4. Store the output -- individual agents in Phase 2 will cross-reference these findings
+5. Print a brief tool summary:
+
+```
+External tools: clang-tidy (with compile_commands.json), cppcheck
+External findings: 3 clang-tidy, 5 cppcheck
+```
+
+If no external tools are available, note it and continue without:
+```
+External tools: none available (install clang-tidy and/or cppcheck for enhanced analysis)
+```
 
 ### Phase 1: Temporal Context (if git repo)
 

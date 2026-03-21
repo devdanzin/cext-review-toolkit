@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tree_sitter_utils import (
-    parse_bytes, extract_functions, find_calls_in_scope,
+    parse_bytes_for_file, extract_functions, find_calls_in_scope,
     get_node_text, strip_comments,
 )
 from scan_common import find_project_root, discover_c_files
@@ -245,7 +245,7 @@ def analyze(target: str, *, max_files: int = 0,
             skipped.append({"file": str(filepath), "reason": str(e)})
             continue
 
-        tree = parse_bytes(source_bytes)
+        tree = parse_bytes_for_file(source_bytes, filepath)
         functions = extract_functions(tree, source_bytes)
         source_text = source_bytes.decode("utf-8", errors="replace")
 
