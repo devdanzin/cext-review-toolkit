@@ -19,6 +19,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Shared script utilities module (`scan_common.py`) for project root detection, file discovery, API table loading.
 - Test infrastructure with TempExtension helper, 4 C code fixtures, 1 setup.py template, and 80+ tests.
 
+### Enhanced
+- `scan_null_checks.py`: added `deref_macro_on_unchecked` finding type — detects dereference-like macros (PyBytes_AS_STRING, PyList_GET_ITEM, etc.) called on unchecked NULL-able values.
+- `scan_type_slots.py`: added `dealloc_missing_xdecref` finding type — detects PyObject* struct members not cleaned up in tp_dealloc.
+- `scan_common.py`: `find_assigned_variable()` now skips past ALL_CAPS macro wrappers (e.g., `STATS(x = PyDict_New())`).
+- New `scan_version_compat.py` script: detects removed/deprecated API usage, missing version guards, and dead compatibility code.
+- `deprecated_apis.json`: added `removed_in` and `version_added` fields, plus entries for PyObject_CallObject, PyEval_CallObject, PyEval_CallObjectWithKeywords.
+- `version-compat-scanner` agent now uses `scan_version_compat.py` for script-assisted triage.
+
 ### Fixed
 - `_check_return_without_exception` false negative: now only suppresses finding when error return is inside a NULL-check block for an exception-setting API.
 - `_check_exception_clobbering` false positive: no longer flags `PyErr_SetString` and other exception-setting APIs as clobbering.

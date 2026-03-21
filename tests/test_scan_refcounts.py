@@ -133,5 +133,35 @@ class TestScanRefcounts(unittest.TestCase):
             self.assertIn("by_type", result["summary"])
 
 
+MACRO_WRAPPED = """\
+#include <Python.h>
+
+#define STATS(x) x
+
+static PyObject *
+macro_wrapped(PyObject *self, PyObject *args)
+{
+    PyObject *result;
+    STATS( result = PyDict_New() );
+    if (result == NULL)
+        return NULL;
+    return result;
+}
+"""
+
+
+class TestMacroWrapped(unittest.TestCase):
+    """Test handling of macro-wrapped variable names."""
+
+    def test_macro_wrapped_assignment(self):
+        """Variable name extracted correctly from STATS() macro wrapper."""
+        with TempExtension({"ext.c": MACRO_WRAPPED}) as root:
+            result = refcounts.analyze(str(root / "ext.c"))
+            for f in result["findings"]:
+                if "variable" in f:
+                    self.assertNotIn("STATS", f["variable"])
+                    self.assertNotIn("(", f["variable"])
+
+
 if __name__ == "__main__":
     unittest.main()

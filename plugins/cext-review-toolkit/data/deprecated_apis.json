@@ -3,92 +3,140 @@
     {
       "name": "PyModule_AddObject",
       "deprecated_since": "3.10",
+      "removed_in": null,
       "replacement": "PyModule_AddObjectRef",
       "note": "Steals reference on success only (pre-3.10). AddObjectRef does not steal."
     },
     {
       "name": "PyUnicode_READY",
       "deprecated_since": "3.12",
+      "removed_in": "3.14",
       "replacement": null,
-      "note": "No-op since 3.12. Can be removed."
+      "note": "No-op since 3.12, macro removed in 3.14."
     },
     {
       "name": "Py_UNICODE",
       "deprecated_since": "3.3",
+      "removed_in": null,
       "replacement": "Py_UCS4 or wchar_t",
       "note": "Type deprecated since 3.3."
     },
     {
       "name": "PyUnicode_AS_UNICODE",
       "deprecated_since": "3.3",
+      "removed_in": null,
       "replacement": "PyUnicode_AsWideCharString",
       "note": "Returns deprecated Py_UNICODE buffer."
     },
     {
       "name": "PyUnicode_AsUnicode",
       "deprecated_since": "3.3",
+      "removed_in": null,
       "replacement": "PyUnicode_AsWideCharString",
       "note": "Returns deprecated Py_UNICODE buffer."
     },
     {
       "name": "PyUnicode_GET_SIZE",
       "deprecated_since": "3.3",
+      "removed_in": null,
       "replacement": "PyUnicode_GET_LENGTH",
       "note": "Use GET_LENGTH for actual character count."
     },
     {
       "name": "PyUnicode_GetSize",
       "deprecated_since": "3.3",
+      "removed_in": null,
       "replacement": "PyUnicode_GetLength",
       "note": "Use GetLength for actual character count."
     },
     {
       "name": "PyEval_InitThreads",
       "deprecated_since": "3.7",
+      "removed_in": null,
       "replacement": null,
       "note": "No-op since 3.7. Can be removed."
     },
     {
       "name": "PyCFunction_Call",
       "deprecated_since": "3.9",
+      "removed_in": "3.13",
       "replacement": "PyObject_Call",
       "note": "Use the generic call interface."
     },
     {
       "name": "PyOS_AfterFork",
       "deprecated_since": "3.7",
+      "removed_in": null,
       "replacement": "PyOS_AfterFork_Child",
       "note": "Renamed for clarity."
     },
     {
       "name": "PyObject_AsCharBuffer",
       "deprecated_since": "3.0",
+      "removed_in": null,
       "replacement": "PyObject_GetBuffer with PyBUF_SIMPLE",
       "note": "Old buffer protocol."
     },
     {
       "name": "PyObject_AsReadBuffer",
       "deprecated_since": "3.0",
+      "removed_in": null,
       "replacement": "PyObject_GetBuffer with PyBUF_SIMPLE",
       "note": "Old buffer protocol."
     },
     {
       "name": "PyObject_AsWriteBuffer",
       "deprecated_since": "3.0",
+      "removed_in": null,
       "replacement": "PyObject_GetBuffer with PyBUF_WRITABLE",
       "note": "Old buffer protocol."
     },
     {
       "name": "Py_TRASHCAN_SAFE_BEGIN",
       "deprecated_since": "3.11",
+      "removed_in": null,
       "replacement": "Py_TRASHCAN_BEGIN",
       "note": "Renamed macro."
     },
     {
       "name": "Py_TRASHCAN_SAFE_END",
       "deprecated_since": "3.11",
+      "removed_in": null,
       "replacement": "Py_TRASHCAN_END",
       "note": "Renamed macro."
+    },
+    {
+      "name": "PyObject_CallObject",
+      "deprecated_since": "3.9",
+      "removed_in": "3.15",
+      "replacement": "PyObject_CallNoArgs (no args) or PyObject_Call",
+      "note": "Use PyObject_CallNoArgs for zero-arg calls, PyObject_Call for general case."
+    },
+    {
+      "name": "PyEval_CallObject",
+      "deprecated_since": "3.9",
+      "removed_in": "3.13",
+      "replacement": "PyObject_Call",
+      "note": "Use the generic call interface."
+    },
+    {
+      "name": "PyEval_CallObjectWithKeywords",
+      "deprecated_since": "3.9",
+      "removed_in": "3.13",
+      "replacement": "PyObject_Call",
+      "note": "Use the generic call interface."
     }
-  ]
+  ],
+  "version_added": {
+    "PyModule_AddObjectRef": "3.10",
+    "PyType_FromModuleAndSpec": "3.10",
+    "Py_NewRef": "3.10",
+    "Py_XNewRef": "3.10",
+    "PyFrame_GetBack": "3.9",
+    "PyObject_CallNoArgs": "3.9",
+    "PyType_GetModuleByDef": "3.11",
+    "PyErr_GetRaisedException": "3.12",
+    "PyDict_GetItemRef": "3.13",
+    "Py_IsFinalizing": "3.13"
+  }
 }

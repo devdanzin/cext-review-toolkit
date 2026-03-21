@@ -20,7 +20,23 @@ Python's C API changes across versions:
 
 ## Analysis Approach
 
-This agent performs **qualitative analysis** without a dedicated script. Use Grep and file reading to examine the codebase, guided by `<plugin_root>/data/deprecated_apis.json`.
+### Phase 1: Script-Assisted Triage
+
+Run the version compatibility scanner to get structured findings:
+
+```bash
+python <plugin_root>/scripts/scan_version_compat.py [scope] --min-python 3.9
+```
+
+Key fields:
+- `findings[].type`: removed_api_usage, deprecated_api_usage, missing_version_guard, dead_version_guard
+- `findings[].api`: which API is affected
+- `findings[].confidence`: high or medium
+- `min_python`: the detected or specified minimum Python version
+
+### Phase 2: Qualitative Analysis
+
+Beyond the script findings, perform deeper analysis using Grep and file reading, guided by `<plugin_root>/data/deprecated_apis.json`.
 
 ### Step 1: Determine Target Python Versions
 

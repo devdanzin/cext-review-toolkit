@@ -138,6 +138,56 @@ def _check_dealloc(type_info: dict, functions: list[dict],
     return findings
 
 
+def _check_dealloc_completeness(type_info: dict, functions: list[dict],
+                                 tree, source_bytes: bytes):
+    """Check that dealloc XDECREF's all PyObject* struct members."""
+    findings = []
+    dealloc_name = type_info.get("dealloc_func")
+    struct_name = type_info.get("struct_name")
+
+    if not dealloc_name or not struct_name:
+        return findings
+
+    dealloc_name = re.sub(r'\([^)]*\)\s*', '', dealloc_name).strip()
+    dealloc_func = _find_func_by_name(functions, dealloc_name)
+    if not dealloc_func:
+        return findings
+
+    members = find_struct_members(tree, source_bytes, struct_name)
+    pyobj_members = [m for m in members if m["is_pyobject"]]
+
+    if not pyobj_members:
+        return findings
+
+    dealloc_body = strip_comments(dealloc_func["body"])
+
+    for member in pyobj_members:
+        name = member["name"]
+        patterns = [
+            rf'Py_XDECREF\s*\([^)]*->\s*{re.escape(name)}\s*\)',
+            rf'Py_DECREF\s*\([^)]*->\s*{re.escape(name)}\s*\)',
+            rf'Py_CLEAR\s*\([^)]*->\s*{re.escape(name)}\s*\)',
+            rf'Py_SETREF\s*\([^)]*->\s*{re.escape(name)}\s*,',
+        ]
+        cleaned = any(re.search(p, dealloc_body) for p in patterns)
+
+        if not cleaned:
+            findings.append({
+                "type": "dealloc_missing_xdecref",
+                "file": "",
+                "function": dealloc_name,
+                "line": dealloc_func["start_line"],
+                "confidence": "high",
+                "detail": (f"tp_dealloc '{dealloc_name}' doesn't XDECREF/CLEAR "
+                           f"PyObject* member '{name}' of {struct_name} — "
+                           f"reference leak per object destruction"),
+                "type_name": type_info["name"],
+                "missing_member": name,
+            })
+
+    return findings
+
+
 def _check_traverse(type_info: dict, functions: list[dict],
                      tree, source_bytes: bytes):
     """Check tp_traverse visits all PyObject* members."""
@@ -368,6 +418,7 @@ def analyze(target: str, *, max_files: int = 0) -> dict:
             for checker_result in [
                 _check_dealloc(ti, functions, source_bytes,
                                source_bytes.decode("utf-8", errors="replace")),
+                _check_dealloc_completeness(ti, functions, tree, source_bytes),
                 _check_traverse(ti, functions, tree, source_bytes),
                 _check_richcompare(ti, functions, source_bytes),
                 _check_gc_flag(ti),
