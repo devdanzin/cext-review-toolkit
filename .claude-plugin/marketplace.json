@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "cext-review-toolkit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "CPython C extension analysis toolkit: 10 specialized agents for refcount auditing, error path analysis, NULL safety, GIL discipline, module state validation, type slot correctness, stable ABI compliance, version compatibility, complexity measurement, and git history analysis. Tree-sitter-powered for accurate analysis of any extension style.",
   "owner": {
     "name": "Danzin",
@@ -12,7 +12,7 @@
       "name": "cext-review-toolkit",
       "description": "10 specialized agents and 4 commands for analyzing CPython C extensions. Tree-sitter-powered scripts detect borrowed-ref-across-callback bugs, module state issues, type slot errors, ABI violations, and more. Includes a unique 'migrate' command for extension modernization checklists.",
       "source": "./plugins/cext-review-toolkit",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "category": "code-quality",
       "keywords": [
         "cpython",

@@ -1,6 +1,6 @@
 {
   "name": "cext-review-toolkit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "C extension review toolkit: specialized agents for reviewing CPython C extensions — finding API misuse, memory safety bugs, compatibility issues, and correctness problems",
   "author": {
     "name": "Danzin"
