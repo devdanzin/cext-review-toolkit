@@ -38,27 +38,26 @@ git checkout -b <prefix>/<short-slug>
 ## Step 3: Implement Changes
 
 Read existing code before modifying it. Follow patterns already established in the codebase. Key conventions:
-- Line length: 99 characters
+- Python 3.10+
 - Double quotes for strings
-- Complete type hints on all functions
-- Docstrings on classes and public methods
-- Tests use `unittest` with `unittest.TestCase` classes
+- Type hints on all function signatures
+- Docstrings on classes and public functions
+- Tests use `unittest` — never pytest
+- Scripts follow the `analyze()` + `main()` pattern (see scan_common.py for arg parsing)
 - Add an entry to `CHANGELOG.md` under `## [Unreleased]` in the appropriate section (Added/Enhanced/Fixed/Documentation). Format: `- Description.`
 
 ## Step 4: Verify
 
-Run all verification commands. ALL must pass before committing.
-
-Important: The `.venv` uses a JIT-enabled CPython build with AddressSanitizer. All commands require the `ASAN_OPTIONS=detect_leaks=0 PYTHON_JIT=0` prefix.
+Run formatting, linting, type checking, and all tests. ALL must pass before committing. NEVER install tools to the system Python, if necessary create a venv and install tools into it.
 
 ```bash
-ASAN_OPTIONS=detect_leaks=0 PYTHON_JIT=0 .venv/bin/ruff format <changed-files>
-ASAN_OPTIONS=detect_leaks=0 PYTHON_JIT=0 .venv/bin/ruff check <changed-files>
-ASAN_OPTIONS=detect_leaks=0 PYTHON_JIT=0 .venv/bin/mypy
-ASAN_OPTIONS=detect_leaks=0 PYTHON_JIT=0 .venv/bin/python -m unittest discover tests -v
+ruff format <changed-files>
+ruff check <changed-files>
+mypy
+python -m unittest discover tests -v
 ```
 
-If any tests fail, fix them before proceeding. If `ruff format` changes files, that's fine — they'll be committed in the next step.
+If any tests fail, fix them before proceeding.
 
 ## Step 5: Commit
 
