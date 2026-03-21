@@ -90,5 +90,54 @@ class TestScanNullChecks(unittest.TestCase):
             self.assertIn("summary", result)
 
 
+DEREF_MACRO_BUG = """\
+#include <Python.h>
+
+static PyObject *
+macro_deref_bug(PyObject *self, PyObject *args)
+{
+    PyObject *ascii = PyUnicode_AsASCIIString(self);
+    const char *s = PyBytes_AS_STRING(ascii);
+    return PyUnicode_FromString(s);
+}
+"""
+
+DEREF_MACRO_SAFE = """\
+#include <Python.h>
+
+static PyObject *
+macro_deref_safe(PyObject *self, PyObject *args)
+{
+    PyObject *ascii = PyUnicode_AsASCIIString(self);
+    if (ascii == NULL)
+        return NULL;
+    const char *s = PyBytes_AS_STRING(ascii);
+    Py_DECREF(ascii);
+    return PyUnicode_FromString(s);
+}
+"""
+
+
+class TestDerefMacroDetection(unittest.TestCase):
+    """Test dereference-like macro detection on unchecked values."""
+
+    def test_detects_deref_macro_on_unchecked(self):
+        """Detect PyBytes_AS_STRING on unchecked PyUnicode_AsASCIIString result."""
+        with TempExtension({"ext.c": DEREF_MACRO_BUG}) as root:
+            result = null_checks.analyze(str(root / "ext.c"))
+            deref = [f for f in result["findings"]
+                     if f["type"] == "deref_macro_on_unchecked"]
+            self.assertGreater(len(deref), 0)
+            self.assertEqual(deref[0]["macro"], "PyBytes_AS_STRING")
+
+    def test_no_finding_when_null_checked(self):
+        """No finding when the variable is NULL-checked before macro use."""
+        with TempExtension({"ext.c": DEREF_MACRO_SAFE}) as root:
+            result = null_checks.analyze(str(root / "ext.c"))
+            deref = [f for f in result["findings"]
+                     if f["type"] == "deref_macro_on_unchecked"]
+            self.assertEqual(len(deref), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

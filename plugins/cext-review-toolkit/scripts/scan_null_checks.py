@@ -25,6 +25,28 @@ from scan_common import (
 )
 
 
+# Macros that dereference their argument — crash if NULL.
+_DEREF_MACROS = {
+    "PyBytes_AS_STRING", "PyBytes_GET_SIZE",
+    "PyByteArray_AS_STRING", "PyByteArray_GET_SIZE",
+    "PyList_GET_ITEM", "PyList_GET_SIZE", "PyList_SET_ITEM",
+    "PyTuple_GET_ITEM", "PyTuple_GET_SIZE", "PyTuple_SET_ITEM",
+    "PyUnicode_GET_LENGTH", "PyUnicode_READ_CHAR",
+    "PyUnicode_DATA", "PyUnicode_READ",
+    "PyFloat_AS_DOUBLE",
+    "PySequence_Fast_GET_ITEM", "PySequence_Fast_GET_SIZE",
+    "PyWeakref_GET_OBJECT",
+    "PyCell_GET", "PyCell_SET",
+    "Py_SIZE", "Py_TYPE", "Py_REFCNT",
+}
+
+# APIs that return NULL on encoding/conversion failure.
+_NULLABLE_CONVERSION_APIS = {
+    "PyUnicode_AsASCIIString", "PyUnicode_AsUTF8String",
+    "PyUnicode_AsEncodedString", "PyUnicode_AsUTF8AndSize",
+    "PyObject_GetAttr", "PyObject_GetAttrString",
+}
+
 _ALLOC_APIS = {
     "PyMem_Malloc", "PyMem_Calloc", "PyMem_Realloc",
     "PyObject_Malloc", "PyObject_Calloc", "PyObject_Realloc",
@@ -131,6 +153,72 @@ def _check_deref_before_check(func, source_bytes, api_tables):
     return findings
 
 
+def _var_in_text(var: str, text: str) -> bool:
+    """Check if a variable name appears as a word in text."""
+    return bool(re.search(r'\b' + re.escape(var) + r'\b', text))
+
+
+def _check_deref_macro_on_unchecked(func, source_bytes, api_tables):
+    """Find dereference-like macros called on potentially-NULL values."""
+    findings = []
+    body = func["body_node"]
+    new_ref_apis = set(api_tables["new_ref_apis"])
+    nullable_apis = new_ref_apis | _NULLABLE_CONVERSION_APIS | _BORROWED_NULL_APIS
+
+    all_calls = find_calls_in_scope(body, source_bytes)
+    all_calls.sort(key=lambda c: c["start_byte"])
+
+    # Track variables assigned from nullable APIs.
+    nullable_vars: dict[str, tuple[str, int, int]] = {}
+    for call in all_calls:
+        if call["function_name"] not in nullable_apis:
+            continue
+        var = find_assigned_variable(call["node"], source_bytes)
+        if var:
+            nullable_vars[var] = (
+                call["function_name"], call["start_line"], call["start_byte"])
+
+    # Check if any deref macro is called with a nullable var
+    # without an intervening NULL check.
+    body_text = get_node_text(body, source_bytes)
+
+    for call in all_calls:
+        if call["function_name"] not in _DEREF_MACROS:
+            continue
+
+        args_text = call["arguments_text"]
+        for var, (api, api_line, api_byte) in nullable_vars.items():
+            if not _var_in_text(var, args_text):
+                continue
+
+            between_text = body_text[
+                api_byte - body.start_byte:call["start_byte"] - body.start_byte]
+            has_null_check = bool(re.search(
+                r'\bif\s*\(\s*' + re.escape(var) + r'\s*==\s*NULL|'
+                r'if\s*\(\s*!\s*' + re.escape(var) + r'\b|'
+                r'if\s*\(\s*' + re.escape(var) + r'\s*!=\s*NULL',
+                between_text
+            ))
+
+            if not has_null_check:
+                findings.append({
+                    "type": "deref_macro_on_unchecked",
+                    "file": "",
+                    "function": func["name"],
+                    "line": call["start_line"],
+                    "confidence": "high",
+                    "detail": (f"{call['function_name']}({var}) at line "
+                               f"{call['start_line']} — '{var}' from "
+                               f"{api}() (line {api_line}) may be NULL"),
+                    "macro": call["function_name"],
+                    "variable": var,
+                    "source_api": api,
+                    "source_line": api_line,
+                })
+
+    return findings
+
+
 def _check_unchecked_pyarg_parse(func, source_bytes, api_tables):
     """Find unchecked PyArg_ParseTuple calls."""
     findings = []
@@ -197,6 +285,7 @@ def analyze(target: str, *, max_files: int = 0) -> dict:
             total_functions += 1
             for checker in (_check_unchecked_alloc,
                             _check_deref_before_check,
+                            _check_deref_macro_on_unchecked,
                             _check_unchecked_pyarg_parse):
                 for f in checker(func, source_bytes, api_tables):
                     f["file"] = rel

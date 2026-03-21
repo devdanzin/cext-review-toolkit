@@ -98,6 +98,14 @@ def find_assigned_variable(call_node, source_bytes: bytes) -> str | None:
             left = node.child_by_field_name("left")
             if left:
                 return get_node_text(left, source_bytes)
+        # Skip past macro wrappers (ALL_CAPS function calls that wrap assignments)
+        if node.type == "call_expression":
+            func = node.child_by_field_name("function")
+            if func:
+                func_text = get_node_text(func, source_bytes)
+                if func_text.isupper():
+                    node = node.parent
+                    continue
         if node.type in ("expression_statement", "declaration",
                           "compound_statement"):
             break

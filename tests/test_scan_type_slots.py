@@ -147,5 +147,84 @@ class TestScanTypeSlots(unittest.TestCase):
             self.assertIn("summary", result)
 
 
+DEALLOC_INCOMPLETE = """\
+#include <Python.h>
+
+typedef struct {
+    PyObject_HEAD
+    PyObject *name;
+    PyObject *value;
+    PyObject *extra;
+} IncompleteObj;
+
+static void
+IncompleteObj_dealloc(IncompleteObj *self)
+{
+    Py_XDECREF(self->name);
+    Py_XDECREF(self->value);
+    /* BUG: self->extra not cleaned up */
+    Py_TYPE(self)->tp_free((PyObject *)self);
+}
+
+static PyTypeObject IncompleteObjType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "test.IncompleteObj",
+    .tp_basicsize = sizeof(IncompleteObj),
+    .tp_dealloc = (destructor)IncompleteObj_dealloc,
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+};
+"""
+
+DEALLOC_COMPLETE = """\
+#include <Python.h>
+
+typedef struct {
+    PyObject_HEAD
+    PyObject *name;
+    PyObject *value;
+} CompleteObj;
+
+static void
+CompleteObj_dealloc(CompleteObj *self)
+{
+    Py_XDECREF(self->name);
+    Py_XDECREF(self->value);
+    Py_TYPE(self)->tp_free((PyObject *)self);
+}
+
+static PyTypeObject CompleteObjType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "test.CompleteObj",
+    .tp_basicsize = sizeof(CompleteObj),
+    .tp_dealloc = (destructor)CompleteObj_dealloc,
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+};
+"""
+
+
+class TestDeallocCompleteness(unittest.TestCase):
+    """Test dealloc completeness checking."""
+
+    def test_detects_missing_xdecref_in_dealloc(self):
+        """Detect PyObject* member not XDECREF'd in dealloc."""
+        with TempExtension({"ext.c": DEALLOC_INCOMPLETE}) as root:
+            result = type_slots.analyze(str(root / "ext.c"))
+            missing = [f for f in result["findings"]
+                       if f["type"] == "dealloc_missing_xdecref"]
+            self.assertGreater(len(missing), 0)
+            names = [f["missing_member"] for f in missing]
+            self.assertIn("extra", names)
+            self.assertNotIn("name", names)
+            self.assertNotIn("value", names)
+
+    def test_complete_dealloc_no_finding(self):
+        """Complete dealloc produces no dealloc_missing_xdecref findings."""
+        with TempExtension({"ext.c": DEALLOC_COMPLETE}) as root:
+            result = type_slots.analyze(str(root / "ext.c"))
+            missing = [f for f in result["findings"]
+                       if f["type"] == "dealloc_missing_xdecref"]
+            self.assertEqual(len(missing), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
