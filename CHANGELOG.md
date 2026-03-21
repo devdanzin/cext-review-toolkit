@@ -26,3 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Heap type DECREF check now matches specific DECREF patterns instead of any `Py_TYPE(self)` mention.
 - All scanner `main()` functions now use shared `parse_common_args()`.
 - Added `callback_without_gil` detection to `scan_gil_usage.py`.
+
+### Documentation
+- Added `CLAUDE.md` with project overview, architecture, dev commands, gotchas, and contribution guides.
+- Fixed CLAUDE.md: removed incorrect `match` statement claim, added venv/lint commands, added gotchas section.

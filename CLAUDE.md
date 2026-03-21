@@ -17,6 +17,9 @@ Key architectural difference: uses Tree-sitter for C parsing (not regex), enabli
 
 ## Dev commands
 ```bash
+# Activate the project venv (Python 3.14 from ~/projects/3.14/python)
+source ~/venvs/cext-review-toolkit/bin/activate
+
 # Run all tests
 python -m unittest discover tests -v
 
@@ -26,10 +29,15 @@ python -m unittest tests.test_scan_refcounts -v
 # Run a single script standalone (all output JSON to stdout)
 python plugins/cext-review-toolkit/scripts/scan_refcounts.py /path/to/extension.c
 python plugins/cext-review-toolkit/scripts/discover_extension.py /path/to/project
+
+# Lint and format (install ruff/mypy into venv if not present)
+ruff format <changed-files>
+ruff check <changed-files>
+mypy
 ```
 
 ## Code style
-- Python 3.10+ (uses `X | Y` union syntax, `match` statements)
+- Python 3.10+ (uses `X | Y` union syntax)
 - Double quotes for strings
 - Type hints on all function signatures
 - Docstrings on classes and public functions
@@ -150,6 +158,13 @@ Important calibration: module state issues (single-phase init, global state) are
 3. Reference data files in `data/` for API lists and version information
 4. Add to the appropriate phase group in `commands/explore.md`
 5. Update CHANGELOG.md
+
+## Gotchas
+
+- **Strip comments before pattern matching:** When checking function bodies for patterns like `tp_free` or `Py_VISIT`, always use `strip_comments()` first. Comments containing these strings (e.g., `/* BUG: should use tp_free */`) cause false negatives. This bit us in Round 1 testing.
+- **`sys.path.insert` for imports:** Scripts use `sys.path.insert(0, str(Path(__file__).resolve().parent))` to import `tree_sitter_utils` and `scan_common`. This is intentional — the scripts directory is not a Python package (no `__init__.py`). Tests use `import_script()` which does the same via importlib.
+- **`parse_bytes` vs `parse_file`:** Always use `parse_bytes(source_bytes)` after reading the file yourself, never `parse_file(filepath)` in scanner loops. `parse_file` reads the file again internally, doubling I/O and creating a TOCTOU race.
+- **`analyze_history.py` has a different `analyze()` signature:** Takes `argv` list instead of `(target, max_files)` — matches code-review-toolkit's convention but differs from all other scripts.
 
 ## Design document
 
