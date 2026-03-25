@@ -30,6 +30,7 @@ Parse arguments into three categories:
 - `compat` → version-compat-scanner
 - `pyerr-clear` → pyerr-clear-auditor
 - `resources` → resource-lifecycle-checker
+- `parity` → parity-checker
 - `complexity` → c-complexity-analyzer
 - `history` → git-history-analyzer
 - `external-tools` → run external tools only (clang-tidy, cppcheck)
@@ -131,15 +132,16 @@ Based on the requested aspects (default: all), launch the appropriate agents. Ea
 7. type-slot-checker
 8. pyerr-clear-auditor
 
-**Group D -- Compatibility**:
+**Group D -- Compatibility and parity**:
 9. stable-abi-checker
 10. version-compat-scanner
+11. parity-checker (only for extensions with dual C/Python implementations)
 
 **Group E -- Code quality**:
-11. c-complexity-analyzer
+12. c-complexity-analyzer
 
 **Group F -- History** (runs last, benefits from all prior findings):
-11. git-history-analyzer
+13. git-history-analyzer
 
 If `parallel` is specified, run agents within each group concurrently (at most `--max-parallel` agents per group, default 2). Groups still execute sequentially.
 

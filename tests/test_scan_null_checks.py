@@ -139,5 +139,56 @@ class TestDerefMacroDetection(unittest.TestCase):
             self.assertEqual(len(deref), 0)
 
 
+CYTHON_UNLIKELY_CHECK = """\
+#include <Python.h>
+
+static PyObject *
+cython_func(PyObject *self, PyObject *args)
+{
+    PyObject *result = PyObject_GetAttrString(self, "attr");
+    if (unlikely(!result)) __PYX_ERR(0, 42, __pyx_L1_error);
+    return result;
+__pyx_L1_error:
+    return NULL;
+}
+"""
+
+CYTHON_UNLIKELY_EQ_CHECK = """\
+#include <Python.h>
+
+static PyObject *
+cython_func2(PyObject *self, PyObject *args)
+{
+    PyObject *obj = PyDict_New();
+    if (unlikely(obj == ((PyObject *)NULL))) __PYX_ERR(0, 42, __pyx_L1_error);
+    return obj;
+__pyx_L1_error:
+    return NULL;
+}
+"""
+
+
+class TestCythonNullPatterns(unittest.TestCase):
+    """Test Cython-aware NULL check pattern recognition."""
+
+    def test_unlikely_bang_not_flagged(self):
+        """Cython unlikely(!var) pattern recognized as a NULL check."""
+        with TempExtension({"ext.c": CYTHON_UNLIKELY_CHECK}) as root:
+            result = null_checks.analyze(str(root / "ext.c"))
+            unchecked = [f for f in result["findings"]
+                         if f["type"] == "unchecked_alloc"
+                         and f.get("variable") == "result"]
+            self.assertEqual(len(unchecked), 0)
+
+    def test_unlikely_eq_null_not_flagged(self):
+        """Cython unlikely(var == ((type)NULL)) recognized as a NULL check."""
+        with TempExtension({"ext.c": CYTHON_UNLIKELY_EQ_CHECK}) as root:
+            result = null_checks.analyze(str(root / "ext.c"))
+            unchecked = [f for f in result["findings"]
+                         if f["type"] == "unchecked_alloc"
+                         and f.get("variable") == "obj"]
+            self.assertEqual(len(unchecked), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
