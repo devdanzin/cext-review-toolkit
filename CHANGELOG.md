@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Code generation auto-detection in `discover_extension.py`: identifies Cython, mypyc, pybind11, or hand-written C code.
 - `code_generation` field in discovery output enables explore command to skip high-FP agents on generated code.
 - Code generation strategy section in `explore.md` with agent dispatch guidance per code type.
+- `scan_pyerr_clear.py` script: audits PyErr_Clear() calls for unguarded exception swallowing.
+- `pyerr-clear-auditor` agent: qualitative analysis of dangerous PyErr_Clear patterns.
+- `pyerr-clear` aspect keyword in explore command for targeted PyErr_Clear auditing.
 - C++ file support via optional `tree-sitter-cpp` dependency (.cpp, .cxx, .cc files).
 - `run_external_tools.py` script wrapping clang-tidy and cppcheck with JSON envelope output.
 - Phase 0.5 in `explore.md` for automatic external tool baseline.
