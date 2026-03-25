@@ -1,0 +1,77 @@
+{
+  "description": "Resource allocation/free pairs for lifecycle tracking. Each entry maps an allocation function to its matching free function(s).",
+  "pairs": [
+    {
+      "category": "c_memory",
+      "alloc": ["malloc", "calloc", "realloc", "strdup"],
+      "free": ["free"],
+      "description": "Standard C memory allocation"
+    },
+    {
+      "category": "python_memory",
+      "alloc": ["PyMem_Malloc", "PyMem_Calloc", "PyMem_Realloc"],
+      "free": ["PyMem_Free"],
+      "description": "Python memory allocator (pymalloc)"
+    },
+    {
+      "category": "python_raw_memory",
+      "alloc": ["PyMem_RawMalloc", "PyMem_RawCalloc", "PyMem_RawRealloc"],
+      "free": ["PyMem_RawFree"],
+      "description": "Python raw memory allocator (no GIL required)"
+    },
+    {
+      "category": "python_object_memory",
+      "alloc": ["PyObject_Malloc", "PyObject_Calloc", "PyObject_Realloc"],
+      "free": ["PyObject_Free"],
+      "description": "Python object allocator"
+    },
+    {
+      "category": "buffer_protocol",
+      "alloc": ["PyObject_GetBuffer"],
+      "free": ["PyBuffer_Release"],
+      "description": "Python buffer protocol"
+    },
+    {
+      "category": "hdf5_type",
+      "alloc": ["H5Tcreate", "H5Tcopy", "H5Tget_member_type", "H5Tget_native_type", "H5Tarray_create", "H5Tvlen_create"],
+      "free": ["H5Tclose"],
+      "description": "HDF5 datatype handles"
+    },
+    {
+      "category": "hdf5_space",
+      "alloc": ["H5Screate", "H5Screate_simple", "H5Dget_space", "H5Aget_space", "H5Scopy"],
+      "free": ["H5Sclose"],
+      "description": "HDF5 dataspace handles"
+    },
+    {
+      "category": "hdf5_dataset",
+      "alloc": ["H5Dcreate", "H5Dcreate2", "H5Dopen", "H5Dopen2"],
+      "free": ["H5Dclose"],
+      "description": "HDF5 dataset handles"
+    },
+    {
+      "category": "hdf5_attribute",
+      "alloc": ["H5Acreate", "H5Acreate2", "H5Aopen", "H5Aopen_name"],
+      "free": ["H5Aclose"],
+      "description": "HDF5 attribute handles"
+    },
+    {
+      "category": "hdf5_group",
+      "alloc": ["H5Gcreate", "H5Gcreate2", "H5Gopen", "H5Gopen2"],
+      "free": ["H5Gclose"],
+      "description": "HDF5 group handles"
+    },
+    {
+      "category": "hdf5_property",
+      "alloc": ["H5Pcreate", "H5Pcopy"],
+      "free": ["H5Pclose"],
+      "description": "HDF5 property list handles"
+    },
+    {
+      "category": "file_io",
+      "alloc": ["fopen", "tmpfile"],
+      "free": ["fclose"],
+      "description": "Standard C file I/O"
+    }
+  ]
+}

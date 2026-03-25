@@ -29,6 +29,7 @@ Parse arguments into three categories:
 - `abi` → stable-abi-checker
 - `compat` → version-compat-scanner
 - `pyerr-clear` → pyerr-clear-auditor
+- `resources` → resource-lifecycle-checker
 - `complexity` → c-complexity-analyzer
 - `history` → git-history-analyzer
 - `external-tools` → run external tools only (clang-tidy, cppcheck)
@@ -123,18 +124,19 @@ Based on the requested aspects (default: all), launch the appropriate agents. Ea
 **Group B -- Memory safety**:
 3. null-safety-scanner
 4. gil-discipline-checker
+5. resource-lifecycle-checker
 
 **Group C -- Extension correctness**:
-5. module-state-checker
-6. type-slot-checker
-7. pyerr-clear-auditor
+6. module-state-checker
+7. type-slot-checker
+8. pyerr-clear-auditor
 
 **Group D -- Compatibility**:
-8. stable-abi-checker
-9. version-compat-scanner
+9. stable-abi-checker
+10. version-compat-scanner
 
 **Group E -- Code quality**:
-10. c-complexity-analyzer
+11. c-complexity-analyzer
 
 **Group F -- History** (runs last, benefits from all prior findings):
 11. git-history-analyzer

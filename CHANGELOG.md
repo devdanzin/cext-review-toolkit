@@ -13,6 +13,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `scan_pyerr_clear.py` script: audits PyErr_Clear() calls for unguarded exception swallowing.
 - `pyerr-clear-auditor` agent: qualitative analysis of dangerous PyErr_Clear patterns.
 - `pyerr-clear` aspect keyword in explore command for targeted PyErr_Clear auditing.
+- `scan_resource_lifecycle.py` script: tracks non-PyObject resource allocation/free pairing (malloc/free, HDF5 handles, buffer protocol, file I/O).
+- `resource-lifecycle-checker` agent: qualitative analysis of resource leaks on error paths.
+- `resource_pairs.json` data file: configurable allocation/free pairs for lifecycle tracking (C memory, Python memory, HDF5, buffer protocol, file I/O).
+- `resources` aspect keyword in explore command for targeted resource lifecycle auditing.
 - C++ file support via optional `tree-sitter-cpp` dependency (.cpp, .cxx, .cc files).
 - `run_external_tools.py` script wrapping clang-tidy and cppcheck with JSON envelope output.
 - Phase 0.5 in `explore.md` for automatic external tool baseline.
