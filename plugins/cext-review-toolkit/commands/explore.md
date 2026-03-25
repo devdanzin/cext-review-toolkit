@@ -28,6 +28,7 @@ Parse arguments into three categories:
 - `type-slots` → type-slot-checker
 - `abi` → stable-abi-checker
 - `compat` → version-compat-scanner
+- `pyerr-clear` → pyerr-clear-auditor
 - `complexity` → c-complexity-analyzer
 - `history` → git-history-analyzer
 - `external-tools` → run external tools only (clang-tidy, cppcheck)
@@ -126,16 +127,17 @@ Based on the requested aspects (default: all), launch the appropriate agents. Ea
 **Group C -- Extension correctness**:
 5. module-state-checker
 6. type-slot-checker
+7. pyerr-clear-auditor
 
 **Group D -- Compatibility**:
-7. stable-abi-checker
-8. version-compat-scanner
+8. stable-abi-checker
+9. version-compat-scanner
 
 **Group E -- Code quality**:
-9. c-complexity-analyzer
+10. c-complexity-analyzer
 
 **Group F -- History** (runs last, benefits from all prior findings):
-10. git-history-analyzer
+11. git-history-analyzer
 
 If `parallel` is specified, run agents within each group concurrently (at most `--max-parallel` agents per group, default 2). Groups still execute sequentially.
 
