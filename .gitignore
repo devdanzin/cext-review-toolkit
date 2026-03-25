@@ -45,6 +45,9 @@ Thumbs.db
 htmlcov/
 .tox/
 
+# Analysis reports (private, not for public distribution)
+reports/
+
 # Temporary
 *.tmp
 *.bak
