@@ -147,6 +147,88 @@ class TestScanTypeSlots(unittest.TestCase):
             self.assertIn("summary", result)
 
 
+TYPE_SPEC_SENTINEL_ZERO = """\
+#include <Python.h>
+
+static PyObject *dummy(PyObject *self, PyObject *args) { Py_RETURN_NONE; }
+
+static PyType_Slot MyType_slots[] = {
+    {Py_tp_new, PyType_GenericNew},
+    {0, 0}
+};
+
+static PyType_Spec MyType_spec = {
+    .name = "mymod.MyType",
+    .basicsize = sizeof(PyObject),
+    .flags = Py_TPFLAGS_DEFAULT,
+    .slots = MyType_slots,
+};
+"""
+
+TYPE_SPEC_SENTINEL_NULL = """\
+#include <Python.h>
+
+static PyObject *dummy(PyObject *self, PyObject *args) { Py_RETURN_NONE; }
+
+static PyType_Slot MyType_slots[] = {
+    {Py_tp_new, PyType_GenericNew},
+    {0, NULL}
+};
+
+static PyType_Spec MyType_spec = {
+    .name = "mymod.MyType",
+    .basicsize = sizeof(PyObject),
+    .flags = Py_TPFLAGS_DEFAULT,
+    .slots = MyType_slots,
+};
+"""
+
+TYPE_SPEC_MISSING_SENTINEL = """\
+#include <Python.h>
+
+static PyObject *dummy(PyObject *self, PyObject *args) { Py_RETURN_NONE; }
+
+static PyType_Slot MyType_slots[] = {
+    {Py_tp_new, PyType_GenericNew},
+};
+
+static PyType_Spec MyType_spec = {
+    .name = "mymod.MyType",
+    .basicsize = sizeof(PyObject),
+    .flags = Py_TPFLAGS_DEFAULT,
+    .slots = MyType_slots,
+};
+"""
+
+
+class TestTypeSpecSentinel(unittest.TestCase):
+    """Test PyType_Slot sentinel detection."""
+
+    def test_sentinel_zero_zero_accepted(self):
+        """{0, 0} sentinel is accepted (no false positive)."""
+        with TempExtension({"ext.c": TYPE_SPEC_SENTINEL_ZERO}) as root:
+            result = type_slots.analyze(str(root / "ext.c"))
+            sentinel_findings = [f for f in result["findings"]
+                                 if f["type"] == "type_spec_missing_sentinel"]
+            self.assertEqual(len(sentinel_findings), 0)
+
+    def test_sentinel_zero_null_accepted(self):
+        """{0, NULL} sentinel is accepted."""
+        with TempExtension({"ext.c": TYPE_SPEC_SENTINEL_NULL}) as root:
+            result = type_slots.analyze(str(root / "ext.c"))
+            sentinel_findings = [f for f in result["findings"]
+                                 if f["type"] == "type_spec_missing_sentinel"]
+            self.assertEqual(len(sentinel_findings), 0)
+
+    def test_missing_sentinel_detected(self):
+        """Missing sentinel is flagged."""
+        with TempExtension({"ext.c": TYPE_SPEC_MISSING_SENTINEL}) as root:
+            result = type_slots.analyze(str(root / "ext.c"))
+            sentinel_findings = [f for f in result["findings"]
+                                 if f["type"] == "type_spec_missing_sentinel"]
+            self.assertGreater(len(sentinel_findings), 0)
+
+
 DEALLOC_INCOMPLETE = """\
 #include <Python.h>
 

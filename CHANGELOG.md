@@ -7,6 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Code generation auto-detection in `discover_extension.py`: identifies Cython, mypyc, pybind11, or hand-written C code.
+- `code_generation` field in discovery output enables explore command to skip high-FP agents on generated code.
+- Code generation strategy section in `explore.md` with agent dispatch guidance per code type.
 - C++ file support via optional `tree-sitter-cpp` dependency (.cpp, .cxx, .cc files).
 - `run_external_tools.py` script wrapping clang-tidy and cppcheck with JSON envelope output.
 - Phase 0.5 in `explore.md` for automatic external tool baseline.
@@ -14,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `parse_bytes_for_file()` in `tree_sitter_utils.py` — auto-selects C or C++ parser by file extension.
 
 ### Changed
+- `callback_without_gil` check now excludes functions assigned to CPython type slots (tp_dealloc, tp_traverse, etc.), eliminating ~50% of GIL false positives.
 - `discover_c_files()` now finds C++ source files (.cpp, .cxx, .cc) when tree-sitter-cpp is installed.
 - `discover_extension.py` `_find_c_files()` now always finds C++ source files.
 - All 9 scanner scripts now use `parse_bytes_for_file()` for language-aware parsing.

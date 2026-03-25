@@ -47,16 +47,42 @@ Before launching any agents:
 1. Run `python <plugin_root>/scripts/discover_extension.py [scope]` to detect the extension layout
 2. Parse the JSON output to identify: module names, source files, init style, Python targets, limited API status
 3. Count .c and .h files in scope
-4. Print a brief project summary:
+4. Check the `code_generation` field: `"hand_written"`, `"cython"`, `"mypyc"`, `"pybind11"`, or `"mixed"`
+5. Print a brief project summary:
 
 ```
 Extension: myext (3 C files, 2,500 lines)
 Init style: single-phase
 Python targets: >=3.9
 Limited API: no
+Code generation: hand_written
 ```
 
 If no C extension source files are found, inform the user and suggest checking the scope.
+
+### Code Generation Strategy
+
+When `code_generation` is `"cython"` or `"mypyc"`, adapt the agent dispatch:
+
+**Skip these agents** (95-100% false positive rate on generated code):
+- refcount-auditor (Cython/mypyc manage refcounts)
+- error-path-analyzer (generated error handling is mechanical)
+- null-safety-scanner (generated NULL checks use different patterns)
+- module-state-checker (answers are always "generator limitation")
+- stable-abi-checker (generated code doesn't target stable ABI)
+- version-compat-scanner (generated code handles version compat at the generator level)
+
+**Keep these agents** (still valuable on generated code):
+- type-slot-checker (near-zero FP, finds real bugs in generated dealloc/traverse)
+- gil-discipline-checker (GIL issues can exist in Cython `nogil` blocks)
+- c-complexity-analyzer (generated code complexity is informational)
+- git-history-analyzer (always valuable — finds bugs via historical patterns)
+
+**For `"pybind11"`**: Run all agents normally (pybind11 code is closer to hand-written).
+
+**For `"mixed"`**: Run all agents but note in the prompt which files are generated so agents can adjust their triage expectations.
+
+Tell agents what code generation tool is in use so they can calibrate their confidence levels and focus on patterns specific to that generator.
 
 ### Phase 0.5: External Tool Baseline (Optional)
 

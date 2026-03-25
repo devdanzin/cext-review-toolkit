@@ -80,6 +80,74 @@ setup_callback(PyObject *self, PyObject *args)
 """
 
 
+TYPE_SLOT_NOT_FLAGGED = """\
+#include <Python.h>
+
+typedef struct {
+    PyObject_HEAD
+    PyObject *data;
+} MyObj;
+
+static void
+MyObj_dealloc(MyObj *self)
+{
+    Py_XDECREF(self->data);
+    Py_TYPE(self)->tp_free((PyObject *)self);
+}
+
+static int
+MyObj_traverse(MyObj *self, visitproc visit, void *arg)
+{
+    Py_VISIT(self->data);
+    return 0;
+}
+
+static PyObject *
+setup_type(PyObject *self, PyObject *args)
+{
+    /* Pass dealloc as function pointer — should NOT trigger callback_without_gil */
+    PyTypeObject type = {0};
+    type.tp_dealloc = (destructor)MyObj_dealloc;
+    type.tp_traverse = (traverseproc)MyObj_traverse;
+    PyType_Ready(&type);
+    Py_RETURN_NONE;
+}
+
+static PyTypeObject MyObjType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "mymod.MyObj",
+    .tp_basicsize = sizeof(MyObj),
+    .tp_dealloc = (destructor)MyObj_dealloc,
+    .tp_traverse = (traverseproc)MyObj_traverse,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+};
+"""
+
+TYPE_SLOT_SPEC_NOT_FLAGGED = """\
+#include <Python.h>
+
+static void
+MyObj_dealloc(PyObject *self)
+{
+    PyTypeObject *tp = Py_TYPE(self);
+    tp->tp_free(self);
+    Py_DECREF(tp);
+}
+
+static PyType_Slot MyObj_slots[] = {
+    {Py_tp_dealloc, MyObj_dealloc},
+    {0, NULL}
+};
+
+static PyObject *
+register_type(PyObject *self, PyObject *args)
+{
+    /* This passes MyObj_dealloc as a slot but should not flag it */
+    Py_RETURN_NONE;
+}
+"""
+
+
 class TestScanGilUsage(unittest.TestCase):
     """Test GIL discipline analysis."""
 
@@ -120,6 +188,32 @@ class TestScanGilUsage(unittest.TestCase):
             cb_findings = [f for f in result["findings"]
                            if f["type"] == "callback_without_gil"]
             self.assertEqual(cb_findings[0]["function"], "my_callback")
+
+    def test_type_slot_dealloc_not_flagged(self):
+        """Functions assigned to tp_dealloc are not flagged as callbacks."""
+        with TempExtension({"typed.c": TYPE_SLOT_NOT_FLAGGED}) as root:
+            result = gil.analyze(str(root / "typed.c"))
+            cb_findings = [f for f in result["findings"]
+                           if f["type"] == "callback_without_gil"]
+            flagged_names = [f["function"] for f in cb_findings]
+            self.assertNotIn("MyObj_dealloc", flagged_names)
+            self.assertNotIn("MyObj_traverse", flagged_names)
+
+    def test_type_spec_slot_not_flagged(self):
+        """Functions in PyType_Slot arrays are not flagged as callbacks."""
+        with TempExtension({"spec.c": TYPE_SLOT_SPEC_NOT_FLAGGED}) as root:
+            result = gil.analyze(str(root / "spec.c"))
+            cb_findings = [f for f in result["findings"]
+                           if f["type"] == "callback_without_gil"]
+            flagged_names = [f["function"] for f in cb_findings]
+            self.assertNotIn("MyObj_dealloc", flagged_names)
+
+    def test_real_callback_still_flagged(self):
+        """Non-type-slot callbacks are still flagged."""
+        with TempExtension({"cb.c": CALLBACK_WITHOUT_GIL}) as root:
+            result = gil.analyze(str(root / "cb.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("callback_without_gil", types)
 
     def test_minimal_extension_runs(self):
         """Script runs without error on minimal extension."""
