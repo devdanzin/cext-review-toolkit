@@ -1,5 +1,5 @@
 ---
-description: "Extension modernization assessment -- multi-phase init, stable ABI, version compatibility"
+description: "Extension modernization assessment covering multi-phase init migration, stable ABI adoption, version compatibility, and free-threading readiness. Use when the user asks to modernize an extension, prepare for subinterpreters, migrate to stable ABI, clean up deprecated APIs, or assess migration effort for a C extension."
 argument-hint: "[scope]"
 allowed-tools: ["Bash", "Glob", "Grep", "Read", "Task"]
 ---
@@ -10,11 +10,14 @@ Run the modernization-focused agents to assess what needs to change to bring the
 
 **Scope:** "$ARGUMENTS" (default: entire project)
 
+**Plugin root:** `<plugin_root>` refers to the directory containing this command file's parent -- i.e., the `plugins/cext-review-toolkit/` directory. Resolve it relative to this file's location.
+
 ## Workflow
 
 1. Run `python <plugin_root>/scripts/discover_extension.py [scope]` to detect the extension layout
 2. If no C extension found, inform the user and stop
-3. Run the four modernization agents, feeding discovery context:
+3. Check the `code_generation` field. If `"cython"` or `"mypyc"`, note that migration recommendations apply to the code generator, not the generated output. Skip stable-abi-checker and version-compat-scanner (answers are always "generator limitation").
+4. Run applicable modernization agents with at most 2 in parallel, feeding discovery context:
    - **module-state-checker** -- init style, global state, module lifecycle
    - **type-slot-checker** -- type definition correctness and modernity
    - **stable-abi-checker** -- ABI compliance assessment

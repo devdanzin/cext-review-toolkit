@@ -1,5 +1,5 @@
 ---
-description: "Comprehensive C extension analysis using specialized agents"
+description: "Comprehensive C extension analysis using specialized agents. Use when the user asks to analyze, audit, or review a C extension, find bugs in C extension code, run all checks on an extension, or do a full extension review. Covers refcount safety, error handling, NULL safety, GIL discipline, module state, type slots, ABI compliance, version compatibility, PyErr_Clear auditing, resource lifecycle, and C/Python parity."
 argument-hint: "[scope] [aspects] [options]"
 allowed-tools: ["Bash", "Glob", "Grep", "Read", "Task"]
 ---
@@ -9,6 +9,8 @@ allowed-tools: ["Bash", "Glob", "Grep", "Read", "Task"]
 Run a comprehensive analysis of a CPython C extension using multiple specialized agents, each focusing on a different aspect of extension correctness. Extension discovery runs first to understand the project layout.
 
 **Arguments:** "$ARGUMENTS"
+
+**Plugin root:** `<plugin_root>` refers to the directory containing this command file's parent -- i.e., the `plugins/cext-review-toolkit/` directory. Resolve it relative to this file's location.
 
 ## Argument Parsing
 
@@ -110,7 +112,7 @@ External tools: none available (install clang-tidy and/or cppcheck for enhanced 
 
 If the project is a git repository:
 - Note that git history is available and will be used by git-history-analyzer in Phase 2F
-- Do NOT run git-history-context as a separate step (the git-history-analyzer agent handles its own script)
+- Do NOT run git history analysis as a separate step (the git-history-analyzer agent handles its own script)
 
 ### Phase 2: Targeted Analysis
 
@@ -195,10 +197,13 @@ After all agents complete, perform deduplication, conflict resolution, and produ
 | Error Handling | G/Y/R | N | N | [1-line summary] |
 | NULL Safety | G/Y/R | N | N | [1-line summary] |
 | GIL Discipline | G/Y/R | N | N | [1-line summary] |
+| Resource Lifecycle | G/Y/R | N | N | [1-line summary] |
 | Module State | G/Y/R | N | N | [1-line summary] |
 | Type Slots | G/Y/R | N | N | [1-line summary] |
+| PyErr_Clear Safety | G/Y/R | N | N | [1-line summary] |
 | ABI Compliance | G/Y/R | N | N | [1-line summary] |
 | Version Compat | G/Y/R | N | N | [1-line summary] |
+| C/Python Parity | G/Y/R | N | N | [1-line summary] |
 | Complexity | G/Y/R | - | N | [1-line summary] |
 
 G = No FIX findings | Y = 1-3 FIX findings | R = 4+ FIX findings
@@ -247,15 +252,6 @@ The above is the extension layout analysis. Use it to:
 - Know the target Python versions for compatibility assessment
 - Know whether limited API is claimed for ABI checking
 ```
-
-## Clang-tidy Integration (Optional)
-
-After Phase 0, check for clang-tidy availability:
-1. Check if `compile_commands.json` exists in the project root or build directory
-2. If it does, note: "clang-tidy compilation database available -- enhanced analysis possible"
-3. Pass this information to agents so they can note the confidence level
-
-Do not run clang-tidy directly from the explore command -- individual agents decide whether to use it based on their analysis needs.
 
 ## Usage Examples
 

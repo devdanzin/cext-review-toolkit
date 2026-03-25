@@ -1,5 +1,5 @@
 ---
-description: "Quick health dashboard -- all agents in summary mode"
+description: "Quick health dashboard scoring a C extension across all dimensions. Use when the user asks for a quick overview, health check, status, score, or summary of a C extension's quality."
 argument-hint: "[scope]"
 allowed-tools: ["Bash", "Glob", "Grep", "Read", "Task"]
 ---
@@ -10,11 +10,14 @@ Run all agents in summary mode to produce a quick health dashboard. Each agent r
 
 **Scope:** "$ARGUMENTS" (default: entire project)
 
+**Plugin root:** `<plugin_root>` refers to the directory containing this command file's parent -- i.e., the `plugins/cext-review-toolkit/` directory. Resolve it relative to this file's location.
+
 ## Workflow
 
 1. Run `python <plugin_root>/scripts/discover_extension.py [scope]` to detect the extension layout
 2. If no C extension found, inform the user and stop
-3. Run all analysis agents with context, requesting summary-tier output only. Run at most 2 concurrently to limit resource usage.
+3. Check the `code_generation` field. If `"cython"` or `"mypyc"`, apply the same agent-filtering strategy documented in the explore command (skip refcount-auditor, error-path-analyzer, null-safety-scanner, module-state-checker, stable-abi-checker, version-compat-scanner).
+4. Run applicable analysis agents with context, requesting summary-tier output only. Run at most 2 concurrently to limit resource usage.
 4. Deduplicate before scoring: when the same issue is flagged by multiple agents, count it once.
 5. Synthesize into a health dashboard:
 
@@ -29,8 +32,10 @@ Run all agents in summary mode to produce a quick health dashboard. Each agent r
 | Error Handling | G/Y/R | X/10 | N | [1-line summary] |
 | NULL Safety | G/Y/R | X/10 | N | [1-line summary] |
 | GIL Discipline | G/Y/R | X/10 | N | [1-line summary] |
+| Resource Lifecycle | G/Y/R | X/10 | N | [1-line summary] |
 | Module State | G/Y/R | X/10 | N | [1-line summary] |
 | Type Slots | G/Y/R | X/10 | N | [1-line summary] |
+| PyErr_Clear Safety | G/Y/R | X/10 | N | [1-line summary] |
 | ABI Compliance | G/Y/R | X/10 | N | [1-line summary] |
 | Version Compat | G/Y/R | X/10 | N | [1-line summary] |
 | Complexity | G/Y/R | X/10 | N | [1-line summary] |

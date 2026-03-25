@@ -1,5 +1,5 @@
 ---
-description: "Find the worst functions to fix first -- refcount issues, error bugs, and complexity"
+description: "Find the worst functions to fix first by combining refcount issues, error handling bugs, and complexity scoring. Use when the user asks where to focus review effort, which functions are most dangerous, what to fix first, or wants a prioritized list of hotspots in a C extension."
 argument-hint: "[scope]"
 allowed-tools: ["Bash", "Glob", "Grep", "Read", "Task"]
 ---
@@ -10,11 +10,14 @@ Run the three highest-value agents to find the worst functions to fix first: **r
 
 **Scope:** "$ARGUMENTS" (default: entire project)
 
+**Plugin root:** `<plugin_root>` refers to the directory containing this command file's parent -- i.e., the `plugins/cext-review-toolkit/` directory. Resolve it relative to this file's location.
+
 ## Workflow
 
 1. Run `python <plugin_root>/scripts/discover_extension.py [scope]` to detect the extension layout
 2. If no C extension found, inform the user and stop
-3. Run with at most 2 agents in parallel, feeding discovery context:
+3. Check the `code_generation` field. If `"cython"` or `"mypyc"`, skip refcount-auditor and error-path-analyzer (95-100% FP rate on generated code) and rely on c-complexity-analyzer alone.
+4. Run with at most 2 agents in parallel, feeding discovery context:
    - **refcount-auditor** -- find reference counting errors
    - **error-path-analyzer** -- find error handling bugs
    - **c-complexity-analyzer** -- find the hardest-to-maintain code
