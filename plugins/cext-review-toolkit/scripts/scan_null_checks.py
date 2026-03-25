@@ -62,12 +62,23 @@ _BORROWED_NULL_APIS = {
 
 
 def _has_null_check_after(var: str, after_text: str) -> bool:
-    """Check if variable has a NULL check in the text following its assignment."""
+    """Check if variable has a NULL check in the text following its assignment.
+
+    Also recognizes Cython-generated patterns:
+    - if (unlikely(!var)) __PYX_ERR(...)
+    - if (unlikely(var == ((type)NULL)))
+    - if (!var) __PYX_ERR(...)
+    """
     return bool(re.search(
         r'if\s*\(\s*' + re.escape(var) + r'\s*==\s*NULL|'
         r'if\s*\(\s*!\s*' + re.escape(var) + r'\b|'
         r'if\s*\(\s*' + re.escape(var) + r'\s*!=\s*NULL|'
-        r'if\s*\(\s*' + re.escape(var) + r'\s*\)',
+        r'if\s*\(\s*' + re.escape(var) + r'\s*\)|'
+        # Cython: if (unlikely(!var)) or if (unlikely(var == ...NULL...))
+        r'if\s*\(\s*unlikely\s*\(\s*!' + re.escape(var) + r'\b|'
+        r'if\s*\(\s*unlikely\s*\(\s*' + re.escape(var) + r'\s*==|'
+        # __PYX_ERR as error handler (implies a preceding NULL check)
+        r'if\s*\([^)]*' + re.escape(var) + r'[^)]*\)\s*\{?\s*__PYX_ERR',
         after_text
     ))
 

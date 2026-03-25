@@ -17,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `resource-lifecycle-checker` agent: qualitative analysis of resource leaks on error paths.
 - `resource_pairs.json` data file: configurable allocation/free pairs for lifecycle tracking (C memory, Python memory, HDF5, buffer protocol, file I/O).
 - `resources` aspect keyword in explore command for targeted resource lifecycle auditing.
+- `parity-checker` agent: finds behavioral differences between C and Python dual implementations.
+- `parity` aspect keyword in explore command for C/Python parity analysis.
 - C++ file support via optional `tree-sitter-cpp` dependency (.cpp, .cxx, .cc files).
 - `run_external_tools.py` script wrapping clang-tidy and cppcheck with JSON envelope output.
 - Phase 0.5 in `explore.md` for automatic external tool baseline.
@@ -25,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - `callback_without_gil` check now excludes functions assigned to CPython type slots (tp_dealloc, tp_traverse, etc.), eliminating ~50% of GIL false positives.
+- `scan_null_checks.py`: NULL check detection now recognizes Cython-generated patterns (`unlikely(!var)`, `unlikely(var == NULL)`, `__PYX_ERR`).
 - `discover_c_files()` now finds C++ source files (.cpp, .cxx, .cc) when tree-sitter-cpp is installed.
 - `discover_extension.py` `_find_c_files()` now always finds C++ source files.
 - All 9 scanner scripts now use `parse_bytes_for_file()` for language-aware parsing.
