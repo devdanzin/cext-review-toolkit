@@ -163,12 +163,89 @@ def _check_mismatched_gilstate(func, source_bytes):
     return findings
 
 
+# CPython type slot field names — functions assigned to these are called by
+# CPython with the GIL held and should not be flagged as foreign callbacks.
+_TYPE_SLOT_NAMES = {
+    # PyTypeObject fields
+    "tp_dealloc", "tp_vectorcall_offset", "tp_getattr", "tp_setattr",
+    "tp_as_async", "tp_repr", "tp_as_number", "tp_as_sequence",
+    "tp_as_mapping", "tp_hash", "tp_call", "tp_str", "tp_getattro",
+    "tp_setattro", "tp_as_buffer", "tp_traverse", "tp_clear",
+    "tp_richcompare", "tp_iter", "tp_iternext", "tp_methods",
+    "tp_members", "tp_getset", "tp_base", "tp_descr_get",
+    "tp_descr_set", "tp_init", "tp_alloc", "tp_new", "tp_free",
+    "tp_is_gc", "tp_finalize",
+    # Number protocol
+    "nb_add", "nb_subtract", "nb_multiply", "nb_remainder",
+    "nb_divmod", "nb_power", "nb_negative", "nb_positive",
+    "nb_absolute", "nb_bool", "nb_invert", "nb_lshift", "nb_rshift",
+    "nb_and", "nb_xor", "nb_or", "nb_int", "nb_float",
+    "nb_inplace_add", "nb_inplace_subtract", "nb_inplace_multiply",
+    "nb_inplace_remainder", "nb_inplace_power", "nb_inplace_lshift",
+    "nb_inplace_rshift", "nb_inplace_and", "nb_inplace_xor",
+    "nb_inplace_or", "nb_floor_divide", "nb_true_divide",
+    "nb_inplace_floor_divide", "nb_inplace_true_divide", "nb_index",
+    "nb_matrix_multiply", "nb_inplace_matrix_multiply",
+    # Sequence protocol
+    "sq_length", "sq_concat", "sq_repeat", "sq_item",
+    "sq_ass_item", "sq_contains", "sq_inplace_concat",
+    "sq_inplace_repeat",
+    # Mapping protocol
+    "mp_length", "mp_subscript", "mp_ass_subscript",
+    # Buffer protocol
+    "bf_getbuffer", "bf_releasebuffer",
+    # PyType_Slot slot IDs
+    "Py_tp_dealloc", "Py_tp_repr", "Py_tp_hash", "Py_tp_call",
+    "Py_tp_str", "Py_tp_getattro", "Py_tp_setattro", "Py_tp_traverse",
+    "Py_tp_clear", "Py_tp_richcompare", "Py_tp_iter", "Py_tp_iternext",
+    "Py_tp_methods", "Py_tp_members", "Py_tp_getset", "Py_tp_descr_get",
+    "Py_tp_descr_set", "Py_tp_init", "Py_tp_alloc", "Py_tp_new",
+    "Py_tp_free", "Py_tp_is_gc", "Py_tp_finalize",
+    "Py_nb_add", "Py_nb_subtract", "Py_nb_multiply", "Py_nb_bool",
+    "Py_nb_int", "Py_nb_float", "Py_nb_index", "Py_nb_negative",
+    "Py_nb_positive", "Py_nb_absolute", "Py_nb_invert",
+    "Py_sq_length", "Py_sq_concat", "Py_sq_repeat", "Py_sq_item",
+    "Py_sq_ass_item", "Py_sq_contains",
+    "Py_mp_length", "Py_mp_subscript", "Py_mp_ass_subscript",
+    "Py_bf_getbuffer", "Py_bf_releasebuffer",
+}
+
+
+def _find_type_slot_functions(source_bytes: bytes) -> set[str]:
+    """Find function names assigned to CPython type slots in struct initializers."""
+    source_text = source_bytes.decode("utf-8", errors="replace")
+    slot_funcs: set[str] = set()
+
+    # Match designated initializer fields: .tp_dealloc = (destructor)func_name
+    for m in re.finditer(
+        r'\.(\w+)\s*=\s*(?:\([^)]*\)\s*)?(\w+)',
+        source_text,
+    ):
+        field_name, func_name = m.group(1), m.group(2)
+        if field_name in _TYPE_SLOT_NAMES:
+            slot_funcs.add(func_name)
+
+    # Match PyType_Slot entries: {Py_tp_dealloc, (destructor)func_name}
+    for m in re.finditer(
+        r'\{\s*(\w+)\s*,\s*(?:\([^)]*\)\s*)?(\w+)\s*\}',
+        source_text,
+    ):
+        slot_id, func_name = m.group(1), m.group(2)
+        if slot_id in _TYPE_SLOT_NAMES:
+            slot_funcs.add(func_name)
+
+    return slot_funcs
+
+
 def _check_callback_without_gil(functions, source_bytes):
     """Check for functions used as callbacks that call Python APIs without GIL."""
     findings = []
 
     callback_candidates = set()
     all_func_names = {f["name"] for f in functions}
+
+    # Find functions assigned to type slots — these are NOT foreign callbacks.
+    type_slot_funcs = _find_type_slot_functions(source_bytes)
 
     for func in functions:
         body = func["body_node"]
@@ -181,6 +258,9 @@ def _check_callback_without_gil(functions, source_bytes):
             for candidate in all_func_names:
                 if re.search(r'\b' + re.escape(candidate) + r'\b', args_text):
                     callback_candidates.add(candidate)
+
+    # Exclude functions known to be type slots (called by CPython with GIL held).
+    callback_candidates -= type_slot_funcs
 
     for func in functions:
         if func["name"] not in callback_candidates:
