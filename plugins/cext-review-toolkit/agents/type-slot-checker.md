@@ -78,6 +78,7 @@ For each type defined in the extension, perform a comprehensive slot audit:
    - Does it use `Py_CLEAR()` (not `Py_XDECREF`) for all `PyObject*` members? (`Py_CLEAR` prevents use-after-free during cycle breaking.)
    - Does it handle the case where `tp_clear` is called multiple times safely?
    - Does it NOT free non-Python resources (those go in `tp_dealloc`, not `tp_clear`)?
+   - **Immutable-type exception**: Types that set their `PyObject*` members once during construction and never mutate them do NOT need `tp_clear`. Such types cannot participate in breakable cycles — there is nothing mutable to clear. CPython itself follows this pattern for similar types (e.g., generator/coroutine types). `tp_traverse` is still valuable (it lets the GC detect reachable objects), but `tp_clear` is unnecessary. If a GC-tracked type has `tp_traverse` but no `tp_clear` and all its `PyObject*` members are immutable after `tp_new`/`tp_init`, classify the missing `tp_clear` as **ACCEPTABLE**, not CONSIDER or FIX.
 
 5. **GC flag consistency**:
    - If the type has ANY `PyObject*` member that could create a cycle, `Py_TPFLAGS_HAVE_GC` must be set.
@@ -147,7 +148,8 @@ For each confirmed or likely finding, produce a structured entry:
 ## Classification Rules
 
 - **FIX**: Missing `tp_free` call in `tp_dealloc` (memory leak on every object destruction). `tp_traverse` that does not visit a `PyObject*` member (GC cannot detect cycles, leading to memory leaks). Returning `Py_NotImplemented` without `Py_INCREF` (refcount corruption). Missing `{0, NULL}` sentinel in `PyType_Slot` array (buffer overread, undefined behavior). Missing `Py_DECREF(Py_TYPE(self))` in heap type dealloc (type object leak).
-- **CONSIDER**: Missing `Py_TPFLAGS_HAVE_GC` when the type has `PyObject*` members that could create cycles (potential memory leak if cycles form). Wrong `tp_free` function for a non-subclassable type (works but fragile). Missing `PyObject_GC_UnTrack` in dealloc (potential GC visiting half-destroyed object).
+- **CONSIDER**: Missing `Py_TPFLAGS_HAVE_GC` when the type has `PyObject*` members that could create cycles (potential memory leak if cycles form). Wrong `tp_free` function for a non-subclassable type (works but fragile). Missing `PyObject_GC_UnTrack` in dealloc (potential GC visiting half-destroyed object). Missing `tp_clear` on a GC type with **mutable** `PyObject*` members (GC can detect cycles but cannot break them).
+- **ACCEPTABLE**: Missing `tp_clear` on a GC type whose `PyObject*` members are **immutable after construction** (set once in `tp_new`/`tp_init`, never mutated). CPython itself omits `tp_clear` for such types. See the immutable-type exception in the tp_clear review section.
 - **POLICY**: Whether to use heap types vs static types. Whether to make a type GC-capable when cycles are unlikely but possible. Whether to support subclassing (`Py_TPFLAGS_BASETYPE`).
 
 ## Important Guidelines
