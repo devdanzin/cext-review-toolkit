@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `docs/reproducer-techniques.md`: guide documenting 18 techniques for triggering C extension bugs from pure Python, with code templates and applicability matrix.
+
 ### Enhanced
 - `type-slot-checker` agent: added immutable-type exception for missing `tp_clear`. Types whose `PyObject*` members are set once during construction and never mutated are now classified as ACCEPTABLE (not CONSIDER) when missing `tp_clear`, matching CPython's own convention.
 
