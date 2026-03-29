@@ -81,6 +81,49 @@ For each high-priority paired function, compare:
 - Are default values the same?
 - Does one return None where the other returns an empty container?
 
+### Phase 3b: Python Wrapper `__new__`-Without-`__init__` Safety
+
+Check for Python classes that wrap C extension types and break when `__new__` is called without `__init__`. This is a cross-language parity gap: the C `tp_new` creates a valid C object, but the Python wrapper's methods assume `__init__` ran.
+
+**The pattern:**
+1. A Python class inherits from a C extension type (directly or indirectly)
+2. The Python `__init__` sets instance attributes (`self.attr = ...`)
+3. Methods access those attributes (`self.attr`) without guards
+4. `Type.__new__(Type)` produces a valid C object but a broken Python object — methods crash with `AttributeError`
+
+**Example:** `socket.socket.__new__(socket.socket).close()` → `AttributeError: '_io_refs'`
+
+**How to detect:**
+
+1. **Identify Python wrappers of C types.** Look in the project's Python source files (`.py`) for classes that inherit from the C extension's types:
+   ```python
+   from ._cext import CType
+   class PyWrapper(CType):
+       def __init__(self, ...):
+           self.some_attr = ...   # ← only set in __init__
+   ```
+
+2. **Collect `__init__`-only attributes.** Find `self.attr = ...` assignments in `__init__` that are NOT also set in `__new__`, `__init_subclass__`, or as class-level defaults / `__slots__`.
+
+3. **Find unguarded access in methods.** Check other methods for bare `self.attr` access without guards.
+
+**Guard patterns to recognize (NOT a bug):**
+
+```python
+# These are safe — the attribute access won't crash:
+hasattr(self, '_io_refs')              # hasattr check
+getattr(self, '_io_refs', 0)           # getattr with default
+try: self._io_refs except AttributeError: pass  # try/except
+_io_refs: int = 0                      # class-level default / __slots__
+# Setting attr in __new__ instead of __init__:
+def __new__(cls): obj = super().__new__(cls); obj._io_refs = 0; return obj
+```
+
+**Classification:**
+- **FIX**: Methods crash (AttributeError) on an uninitialized object, and the type is constructible via `__new__` without arguments
+- **CONSIDER**: Methods have partial guards but some code paths are unprotected
+- **ACCEPTABLE**: The type blocks `__new__`-only construction (e.g., `__new__` requires mandatory args), or the class is not exported / not intended for external use
+
 ### Phase 4: Assess Security Impact
 
 For each parity gap found, assess:
@@ -130,14 +173,19 @@ For each parity gap found, assess:
 
 ## Confirmed Parity
 [Functions where both implementations agree — positive signal]
+
+## Python Wrapper `__new__` Safety
+| Python Wrapper | C Base Type | Unguarded `__init__` Attrs | Affected Methods |
+|---------------|------------|---------------------------|------------------|
+| `socket.socket` | `_socket.socket` | `_io_refs`, `_closed` | `close()`, `makefile()` |
 ```
 
 ## Classification Rules
 
-- **FIX**: C and Python implementations disagree on validation of untrusted input, and the disagreement could lead to security issues (injection, smuggling, crash). One implementation accepts input the other rejects.
-- **CONSIDER**: Implementations disagree on edge cases but the security impact is unclear or low. Different error types, different default values, different handling of unusual-but-valid input.
+- **FIX**: C and Python implementations disagree on validation of untrusted input, and the disagreement could lead to security issues (injection, smuggling, crash). One implementation accepts input the other rejects. Also: Python wrapper methods crash with `AttributeError` when `__new__` is called without `__init__` on a constructible type.
+- **CONSIDER**: Implementations disagree on edge cases but the security impact is unclear or low. Different error types, different default values, different handling of unusual-but-valid input. Also: Python wrapper methods have partial guards for `__new__`-without-`__init__` but some code paths are unprotected.
 - **POLICY**: Implementations intentionally differ (e.g., C version is stricter for performance reasons). The difference is documented or clearly intentional.
-- **ACCEPTABLE**: Minor differences that don't affect security or correctness (different error message text, different internal representations).
+- **ACCEPTABLE**: Minor differences that don't affect security or correctness (different error message text, different internal representations). Also: Python wrapper type blocks `__new__`-only construction or is not intended for external use.
 
 ## Important Guidelines
 

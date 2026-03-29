@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-03-29
+
+### Enhanced
+- `parity-checker` agent: added Python wrapper `__new__`-without-`__init__` safety check. Detects Python classes that wrap C extension types and break when `__new__` is called without `__init__` — methods crash with `AttributeError` on attributes only set in `__init__`. Includes guard pattern recognition (hasattr, getattr with default, try/except, class-level defaults, `__slots__`, attrs set in `__new__`).
+
 ## [0.1.3] - 2026-03-29
 
 ### Added
