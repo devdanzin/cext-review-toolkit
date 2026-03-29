@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-03-29
+
+### Enhanced
+- `type-slot-checker` agent and `scan_type_slots.py`: added `new_and_init_partial_state` triage check. Flags types that define both `tp_new` and `tp_init`, which creates a partial-initialization window between `__new__` and `__init__`. Low confidence, used as a prioritization signal for deeper review of init safety issues. Skips types where `tp_new` is `PyType_GenericNew` (not a custom implementation). Based on APSW maintainer feedback.
+- `type-slot-checker` agent: added triage principle to tp_new/tp_init review section — types with no `tp_init` are inherently safe from re-init and partial-init issues.
+
 ## [0.1.4] - 2026-03-29
 
 ### Enhanced
