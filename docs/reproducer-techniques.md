@@ -465,6 +465,39 @@ oom_scan(lambda: setattr(Obj(), "x", 42))
 
 ---
 
+## Technique 19: Stateful metaclass hash for type-keyed dict lookups
+
+**Triggers**: `PyDict_GetItem` (or similar) that uses a Python type as a dict key. The type's `__hash__` is controlled by its metaclass. A stateful metaclass can make `__hash__` succeed during dict insertion but fail during lookup.
+
+**Bug class**: C code uses `PyDict_GetItem(dict, type_obj)` to look up a type in a registry. `PyDict_GetItem` silently swallows exceptions from `__hash__`. If `__hash__` raises `MemoryError`, the lookup silently fails and the registered handler is skipped.
+
+```python
+class StatefulHashMeta(type):
+    _fail = False
+    def __hash__(cls):
+        if StatefulHashMeta._fail:
+            raise MemoryError("hash bomb — delayed")
+        return type.__hash__(cls)
+
+class DelayedBrokenType(metaclass=StatefulHashMeta):
+    pass
+
+# Register DelayedBrokenType in a type registry (hash succeeds here)
+registry = {DelayedBrokenType: "handler"}
+
+# Arm the bomb — hash now fails during LOOKUP
+StatefulHashMeta._fail = True
+
+# PyDict_GetItem(registry, DelayedBrokenType) silently swallows MemoryError
+# and returns NULL as if the key were not found
+```
+
+**How it works**: Python types get their `__hash__` from their metaclass. A stateful metaclass can control when hashing fails. This is the key insight: the type is used as a dict key in C extensions' type registries (e.g., bson's encoder/decoder maps, custom serializers). The hash works during registration but fails during lookup, making `PyDict_GetItem` silently drop the registered handler.
+
+**Confirmed on**: pymongo/bson `_write_element_to_buffer` type registry lookup — `MemoryError` silently swallowed, `InvalidDocument` raised instead of `MemoryError`.
+
+---
+
 ## Applicability Matrix
 
 | Technique | Triggers Bug Class | Needs Special Object | Difficulty |
@@ -487,3 +520,4 @@ oom_scan(lambda: setattr(Obj(), "x", 42))
 | 16. Refleak measurement | Reference count bugs | sys.getrefcount | Easy |
 | 17. Memleak measurement | Memory leaks | tracemalloc | Easy |
 | 18. OOM injection | Unchecked allocations, NULL deref on OOM | _testcapi | Easy |
+| 19. Stateful metaclass hash | PyDict_GetItem swallows errors on type-keyed lookups | Metaclass | Medium |

@@ -6,8 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-03-29
+
 ### Added
-- `docs/reproducer-techniques.md`: guide documenting 18 techniques for triggering C extension bugs from pure Python, with code templates and applicability matrix.
+- `docs/reproducer-techniques.md`: Technique 19 — stateful metaclass hash for type-keyed dict lookups. Confirmed on pymongo/bson.
 
 ### Enhanced
 - `type-slot-checker` agent: added immutable-type exception for missing `tp_clear`. Types whose `PyObject*` members are set once during construction and never mutated are now classified as ACCEPTABLE (not CONSIDER) when missing `tp_clear`, matching CPython's own convention.
