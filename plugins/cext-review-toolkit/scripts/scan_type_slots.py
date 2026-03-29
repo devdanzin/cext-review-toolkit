@@ -491,6 +491,61 @@ def _check_new_without_init(
     return findings
 
 
+def _check_new_and_init_partial_state(type_info: dict):
+    """Flag types that define both tp_new and tp_init.
+
+    Types with both have a partial-initialization window between __new__
+    returning and __init__ completing. This is a triage signal — not a bug
+    by itself, but it means the type is susceptible to __new__-without-__init__
+    issues and should be reviewed for the more specific init_not_reinit_safe
+    and new_missing_member_init patterns.
+
+    Types with only tp_new are safe (all init is atomic). Types with only
+    tp_init (inherited tp_new from base) start zeroed by tp_alloc.
+    """
+    findings = []
+    new_name = type_info.get("new_func")
+    init_name = type_info.get("init_func")
+
+    if not new_name or not init_name:
+        return findings
+
+    # Strip casts.
+    new_name_clean = re.sub(r"\([^)]*\)\s*", "", new_name).strip()
+    init_name_clean = re.sub(r"\([^)]*\)\s*", "", init_name).strip()
+
+    # Skip if tp_new is the generic default (not a custom implementation).
+    generic_new_names = {
+        "PyType_GenericNew",
+        "PyBaseObject_Type.tp_new",
+        "object_new",
+    }
+    if new_name_clean in generic_new_names:
+        return findings
+
+    findings.append(
+        {
+            "type": "new_and_init_partial_state",
+            "file": "",
+            "function": f"{new_name_clean} / {init_name_clean}",
+            "line": type_info.get("line", 0),
+            "confidence": "low",
+            "detail": (
+                f"Type '{type_info['name']}' defines both tp_new "
+                f"('{new_name_clean}') and tp_init ('{init_name_clean}'). "
+                f"This creates a partial-initialization window between "
+                f"__new__ and __init__ — methods called before __init__ "
+                f"(or on objects where __init__ was never called) may "
+                f"encounter missing state. Review for init_not_reinit_safe "
+                f"and new_missing_member_init issues."
+            ),
+            "type_name": type_info["name"],
+        }
+    )
+
+    return findings
+
+
 def _check_gc_flag(type_info: dict):
     """Check if type has traverse but no GC flag."""
     findings = []
@@ -664,6 +719,7 @@ def analyze(target: str, *, max_files: int = 0) -> dict:
                 _check_gc_flag(ti),
                 _check_init_reinit_safety(ti, functions, tree, source_bytes),
                 _check_new_without_init(ti, functions, tree, source_bytes),
+                _check_new_and_init_partial_state(ti),
             ]:
                 for f in checker_result:
                     f["file"] = rel

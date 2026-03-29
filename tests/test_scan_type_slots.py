@@ -476,5 +476,123 @@ class TestNewWithoutInit(unittest.TestCase):
             self.assertEqual(len(new_findings), 0)
 
 
+TYPE_WITH_NEW_AND_INIT = """\
+#include <Python.h>
+
+typedef struct {
+    PyObject_HEAD
+    PyObject *data;
+} BothObj;
+
+static PyObject *
+BothObj_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
+{
+    BothObj *self = (BothObj *)type->tp_alloc(type, 0);
+    return (PyObject *)self;
+}
+
+static int
+BothObj_init(BothObj *self, PyObject *args, PyObject *kwds)
+{
+    self->data = PyList_New(0);
+    return 0;
+}
+
+static PyTypeObject BothObjType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "test.BothObj",
+    .tp_basicsize = sizeof(BothObj),
+    .tp_new = BothObj_new,
+    .tp_init = (initproc)BothObj_init,
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+};
+"""
+
+TYPE_WITH_ONLY_NEW = """\
+#include <Python.h>
+
+typedef struct {
+    PyObject_HEAD
+    PyObject *data;
+} OnlyNewObj;
+
+static PyObject *
+OnlyNewObj_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
+{
+    OnlyNewObj *self = (OnlyNewObj *)type->tp_alloc(type, 0);
+    if (self != NULL) {
+        self->data = PyList_New(0);
+    }
+    return (PyObject *)self;
+}
+
+static PyTypeObject OnlyNewObjType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "test.OnlyNewObj",
+    .tp_basicsize = sizeof(OnlyNewObj),
+    .tp_new = OnlyNewObj_new,
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+};
+"""
+
+TYPE_WITH_GENERIC_NEW_AND_INIT = """\
+#include <Python.h>
+
+typedef struct {
+    PyObject_HEAD
+    PyObject *data;
+} GenericNewObj;
+
+static int
+GenericNewObj_init(GenericNewObj *self, PyObject *args, PyObject *kwds)
+{
+    self->data = PyList_New(0);
+    return 0;
+}
+
+static PyTypeObject GenericNewObjType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "test.GenericNewObj",
+    .tp_basicsize = sizeof(GenericNewObj),
+    .tp_new = PyType_GenericNew,
+    .tp_init = (initproc)GenericNewObj_init,
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+};
+"""
+
+
+class TestNewAndInitPartialState(unittest.TestCase):
+    """Test new_and_init_partial_state triage check."""
+
+    def test_detects_both_new_and_init(self):
+        """Flag type with both custom tp_new and tp_init."""
+        with TempExtension({"ext.c": TYPE_WITH_NEW_AND_INIT}) as root:
+            result = type_slots.analyze(str(root / "ext.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("new_and_init_partial_state", types)
+
+    def test_only_new_no_finding(self):
+        """Type with only tp_new (no tp_init) produces no finding."""
+        with TempExtension({"ext.c": TYPE_WITH_ONLY_NEW}) as root:
+            result = type_slots.analyze(str(root / "ext.c"))
+            partial = [
+                f
+                for f in result["findings"]
+                if f["type"] == "new_and_init_partial_state"
+            ]
+            self.assertEqual(len(partial), 0)
+
+    def test_generic_new_with_init_no_finding(self):
+        """Type with PyType_GenericNew + tp_init produces no finding."""
+        with TempExtension({"ext.c": TYPE_WITH_GENERIC_NEW_AND_INIT}) as root:
+            result = type_slots.analyze(str(root / "ext.c"))
+            partial = [
+                f
+                for f in result["findings"]
+                if f["type"] == "new_and_init_partial_state"
+            ]
+            self.assertEqual(len(partial), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

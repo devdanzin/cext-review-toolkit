@@ -42,6 +42,7 @@ Collect all findings and organize by type:
 | `type_spec_missing_sentinel` | CRITICAL | PyType_Slot array not terminated with {0, NULL} |
 | `init_not_reinit_safe` | HIGH | tp_init allocates resources without checking/cleaning prior state -- second __init__() call leaks |
 | `new_missing_member_init` | MEDIUM | tp_new uses non-zeroing allocator without initializing pointer members -- __new__() without __init__() leaves dangling pointers |
+| `new_and_init_partial_state` | LOW (triage) | Type defines both tp_new and tp_init, creating a partial-initialization window -- prioritize for deeper review |
 
 For each finding:
 1. Read the type's struct definition to understand all members.
@@ -88,7 +89,8 @@ For each type defined in the extension, perform a comprehensive slot audit:
    - If `Py_TPFLAGS_HAVE_GC` is set, objects must be allocated with `PyObject_GC_New` and tracked with `PyObject_GC_Track`.
    - If `Py_TPFLAGS_HAVE_GC` is NOT set, objects must NOT be allocated with GC functions.
 
-6. **tp_new / tp_init review** (critical for C extensions — Python allows calling patterns impossible in C++):
+6. **tp_new / tp_init review** (critical for C extensions — Python allows calling patterns impossible in C++).
+   **Triage principle:** Types with only `tp_new` (no `tp_init`) are safe by construction — all init is atomic. Types with only `tp_init` (inherited `tp_new`) start zeroed by `tp_alloc`. Types with BOTH have a partial-initialization window and should be reviewed first. A type that has no `tp_init` at all is inherently safe from re-init and partial-init issues regardless of its `tp_new` arguments.
    - Does `tp_new` allocate the object correctly (using `tp_alloc` which zeros memory)?
    - Does `tp_new` initialize ALL pointer members to NULL/safe defaults? Python allows `object.__new__(MyType)` without calling `__init__`, so methods may be called on objects where `tp_init` never ran. If `tp_new` doesn't zero pointers, methods that assume `tp_init` ran will dereference uninitialized garbage.
    - Does `tp_init` properly handle being called multiple times on the same object? Python allows `obj.__init__()` to be called again after construction. If `tp_init` allocates resources (malloc, PyObject_New, fopen, etc.) without first cleaning up existing state, the second call leaks the first call's resources. The fix is either: (a) reject re-init (`if (self->initialized) { PyErr_SetString(...); return -1; }`), or (b) clean up first (run destructor-like logic before re-initializing).

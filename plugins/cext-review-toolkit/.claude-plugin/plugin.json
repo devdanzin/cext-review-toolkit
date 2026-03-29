@@ -1,6 +1,6 @@
 {
   "name": "cext-review-toolkit",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "CPython C/C++ extension analysis agents: refcount auditing (with borrowed-ref-across-callback detection), error path analysis, NULL safety scanning, GIL discipline checking, module state validation, type slot correctness, stable ABI compliance, version compatibility scanning, PyErr_Clear auditing, resource lifecycle tracking, C/Python parity checking, complexity measurement, and git history analysis. Tree-sitter-powered C/C++ parsing with optional clang-tidy/cppcheck integration.",
   "author": {
     "name": "Danzin"
