@@ -117,8 +117,9 @@ class TestScanTypeSlots(unittest.TestCase):
         """Detect traverse not visiting all PyObject* members."""
         with TempExtension({"buggy.c": BUGGY_TYPE}) as root:
             result = type_slots.analyze(str(root / "buggy.c"))
-            missing = [f for f in result["findings"]
-                       if f["type"] == "traverse_missing_member"]
+            missing = [
+                f for f in result["findings"] if f["type"] == "traverse_missing_member"
+            ]
             self.assertGreaterEqual(len(missing), 1)
             members = [f["missing_member"] for f in missing]
             self.assertIn("callback", members)
@@ -127,9 +128,17 @@ class TestScanTypeSlots(unittest.TestCase):
         """Correct type should have no dealloc or traverse findings."""
         with TempExtension({"good.c": CORRECT_TYPE}) as root:
             result = type_slots.analyze(str(root / "good.c"))
-            bad = [f for f in result["findings"]
-                   if f["type"] in ("dealloc_missing_tp_free", "dealloc_wrong_free",
-                                     "dealloc_missing_untrack", "traverse_missing_member")]
+            bad = [
+                f
+                for f in result["findings"]
+                if f["type"]
+                in (
+                    "dealloc_missing_tp_free",
+                    "dealloc_wrong_free",
+                    "dealloc_missing_untrack",
+                    "traverse_missing_member",
+                )
+            ]
             self.assertEqual(len(bad), 0)
 
     def test_richcompare_not_incref(self):
@@ -208,24 +217,33 @@ class TestTypeSpecSentinel(unittest.TestCase):
         """{0, 0} sentinel is accepted (no false positive)."""
         with TempExtension({"ext.c": TYPE_SPEC_SENTINEL_ZERO}) as root:
             result = type_slots.analyze(str(root / "ext.c"))
-            sentinel_findings = [f for f in result["findings"]
-                                 if f["type"] == "type_spec_missing_sentinel"]
+            sentinel_findings = [
+                f
+                for f in result["findings"]
+                if f["type"] == "type_spec_missing_sentinel"
+            ]
             self.assertEqual(len(sentinel_findings), 0)
 
     def test_sentinel_zero_null_accepted(self):
         """{0, NULL} sentinel is accepted."""
         with TempExtension({"ext.c": TYPE_SPEC_SENTINEL_NULL}) as root:
             result = type_slots.analyze(str(root / "ext.c"))
-            sentinel_findings = [f for f in result["findings"]
-                                 if f["type"] == "type_spec_missing_sentinel"]
+            sentinel_findings = [
+                f
+                for f in result["findings"]
+                if f["type"] == "type_spec_missing_sentinel"
+            ]
             self.assertEqual(len(sentinel_findings), 0)
 
     def test_missing_sentinel_detected(self):
         """Missing sentinel is flagged."""
         with TempExtension({"ext.c": TYPE_SPEC_MISSING_SENTINEL}) as root:
             result = type_slots.analyze(str(root / "ext.c"))
-            sentinel_findings = [f for f in result["findings"]
-                                 if f["type"] == "type_spec_missing_sentinel"]
+            sentinel_findings = [
+                f
+                for f in result["findings"]
+                if f["type"] == "type_spec_missing_sentinel"
+            ]
             self.assertGreater(len(sentinel_findings), 0)
 
 
@@ -291,8 +309,9 @@ class TestDeallocCompleteness(unittest.TestCase):
         """Detect PyObject* member not XDECREF'd in dealloc."""
         with TempExtension({"ext.c": DEALLOC_INCOMPLETE}) as root:
             result = type_slots.analyze(str(root / "ext.c"))
-            missing = [f for f in result["findings"]
-                       if f["type"] == "dealloc_missing_xdecref"]
+            missing = [
+                f for f in result["findings"] if f["type"] == "dealloc_missing_xdecref"
+            ]
             self.assertGreater(len(missing), 0)
             names = [f["missing_member"] for f in missing]
             self.assertIn("extra", names)
@@ -303,9 +322,158 @@ class TestDeallocCompleteness(unittest.TestCase):
         """Complete dealloc produces no dealloc_missing_xdecref findings."""
         with TempExtension({"ext.c": DEALLOC_COMPLETE}) as root:
             result = type_slots.analyze(str(root / "ext.c"))
-            missing = [f for f in result["findings"]
-                       if f["type"] == "dealloc_missing_xdecref"]
+            missing = [
+                f for f in result["findings"] if f["type"] == "dealloc_missing_xdecref"
+            ]
             self.assertEqual(len(missing), 0)
+
+
+INIT_REINIT_UNSAFE = """\
+#include <Python.h>
+
+typedef struct {
+    PyObject_HEAD
+    PyObject *data;
+    char *buffer;
+} UnsafeObj;
+
+static int
+UnsafeObj_init(UnsafeObj *self, PyObject *args, PyObject *kwds)
+{
+    /* BUG: allocates without checking if already initialized */
+    self->data = PyList_New(0);
+    self->buffer = PyMem_Malloc(1024);
+    return 0;
+}
+
+static PyTypeObject UnsafeObjType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "test.UnsafeObj",
+    .tp_basicsize = sizeof(UnsafeObj),
+    .tp_init = (initproc)UnsafeObj_init,
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+};
+"""
+
+INIT_REINIT_SAFE = """\
+#include <Python.h>
+
+typedef struct {
+    PyObject_HEAD
+    PyObject *data;
+} SafeObj;
+
+static int
+SafeObj_init(SafeObj *self, PyObject *args, PyObject *kwds)
+{
+    /* Safe: cleans up before re-init */
+    if (self->data != NULL) {
+        Py_CLEAR(self->data);
+    }
+    self->data = PyList_New(0);
+    return 0;
+}
+
+static PyTypeObject SafeObjType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "test.SafeObj",
+    .tp_basicsize = sizeof(SafeObj),
+    .tp_init = (initproc)SafeObj_init,
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+};
+"""
+
+NEW_WITHOUT_INIT_UNSAFE = """\
+#include <Python.h>
+
+typedef struct {
+    PyObject_HEAD
+    PyObject *data;
+    char *buffer;
+} BadNewObj;
+
+static PyObject *
+BadNewObj_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
+{
+    /* BUG: uses PyObject_New (non-zeroing) without initializing members */
+    BadNewObj *self = (BadNewObj *)PyObject_New(BadNewObj, type);
+    /* data and buffer are uninitialized garbage */
+    return (PyObject *)self;
+}
+
+static PyTypeObject BadNewObjType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "test.BadNewObj",
+    .tp_basicsize = sizeof(BadNewObj),
+    .tp_new = BadNewObj_new,
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+};
+"""
+
+NEW_WITH_INIT_SAFE = """\
+#include <Python.h>
+
+typedef struct {
+    PyObject_HEAD
+    PyObject *data;
+} GoodNewObj;
+
+static PyObject *
+GoodNewObj_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
+{
+    /* Safe: uses tp_alloc which zeros memory */
+    GoodNewObj *self = (GoodNewObj *)type->tp_alloc(type, 0);
+    return (PyObject *)self;
+}
+
+static PyTypeObject GoodNewObjType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "test.GoodNewObj",
+    .tp_basicsize = sizeof(GoodNewObj),
+    .tp_new = GoodNewObj_new,
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+};
+"""
+
+
+class TestInitReinitSafety(unittest.TestCase):
+    """Test tp_init re-init safety detection."""
+
+    def test_detects_unsafe_reinit(self):
+        """Detect tp_init that allocates without re-init guard."""
+        with TempExtension({"ext.c": INIT_REINIT_UNSAFE}) as root:
+            result = type_slots.analyze(str(root / "ext.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("init_not_reinit_safe", types)
+
+    def test_safe_reinit_no_finding(self):
+        """tp_init with re-init guard produces no finding."""
+        with TempExtension({"ext.c": INIT_REINIT_SAFE}) as root:
+            result = type_slots.analyze(str(root / "ext.c"))
+            reinit = [
+                f for f in result["findings"] if f["type"] == "init_not_reinit_safe"
+            ]
+            self.assertEqual(len(reinit), 0)
+
+
+class TestNewWithoutInit(unittest.TestCase):
+    """Test tp_new without tp_init safety detection."""
+
+    def test_detects_uninitialized_members(self):
+        """Detect tp_new with non-zeroing alloc and uninitialized members."""
+        with TempExtension({"ext.c": NEW_WITHOUT_INIT_UNSAFE}) as root:
+            result = type_slots.analyze(str(root / "ext.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("new_missing_member_init", types)
+
+    def test_zeroing_alloc_no_finding(self):
+        """tp_new using tp_alloc (zeroing) produces no finding."""
+        with TempExtension({"ext.c": NEW_WITH_INIT_SAFE}) as root:
+            result = type_slots.analyze(str(root / "ext.c"))
+            new_findings = [
+                f for f in result["findings"] if f["type"] == "new_missing_member_init"
+            ]
+            self.assertEqual(len(new_findings), 0)
 
 
 if __name__ == "__main__":

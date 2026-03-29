@@ -18,10 +18,14 @@ try:
     import tree_sitter
     import tree_sitter_c
 except ImportError:
-    print(json.dumps({
-        "error": "tree-sitter not installed",
-        "install": "pip install tree-sitter tree-sitter-c",
-    }))
+    print(
+        json.dumps(
+            {
+                "error": "tree-sitter not installed",
+                "install": "pip install tree-sitter tree-sitter-c",
+            }
+        )
+    )
     sys.exit(1)
 
 # Initialize the C parser once at module level.
@@ -34,6 +38,7 @@ _cpp_parser: tree_sitter.Parser | None = None
 
 try:
     import tree_sitter_cpp
+
     _CPP_AVAILABLE = True
 except ImportError:
     pass
@@ -53,7 +58,9 @@ def _get_cpp_parser() -> tree_sitter.Parser:
     global _cpp_parser
     if _cpp_parser is None:
         if not _CPP_AVAILABLE:
-            raise ImportError("tree-sitter-cpp not installed: pip install tree-sitter-cpp")
+            raise ImportError(
+                "tree-sitter-cpp not installed: pip install tree-sitter-cpp"
+            )
         cpp_language = tree_sitter.Language(tree_sitter_cpp.language())
         _cpp_parser = tree_sitter.Parser(cpp_language)
     return _cpp_parser
@@ -90,7 +97,9 @@ def parse_bytes(source_bytes: bytes) -> tree_sitter.Tree:
 
 def get_node_text(node: tree_sitter.Node, source_bytes: bytes) -> str:
     """Get the source text for a tree-sitter node."""
-    return source_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+    return source_bytes[node.start_byte : node.end_byte].decode(
+        "utf-8", errors="replace"
+    )
 
 
 def walk_descendants(node: tree_sitter.Node, type_filter: str | None = None):
@@ -232,23 +241,26 @@ def extract_functions(tree: tree_sitter.Tree, source_bytes: bytes) -> list[dict]
         if body_text.startswith("{") and body_text.endswith("}"):
             body_text = body_text[1:-1]
 
-        functions.append({
-            "name": func_name,
-            "return_type": return_type,
-            "parameters": params_text,
-            "body": body_text,
-            "body_node": body_node,
-            "start_line": node.start_point[0] + 1,
-            "end_line": node.end_point[0] + 1,
-            "start_byte": node.start_byte,
-            "end_byte": node.end_byte,
-        })
+        functions.append(
+            {
+                "name": func_name,
+                "return_type": return_type,
+                "parameters": params_text,
+                "body": body_text,
+                "body_node": body_node,
+                "start_line": node.start_point[0] + 1,
+                "end_line": node.end_point[0] + 1,
+                "start_byte": node.start_byte,
+                "end_byte": node.end_byte,
+            }
+        )
 
     return functions
 
 
-def extract_struct_initializers(tree: tree_sitter.Tree, source_bytes: bytes,
-                                 type_name: str) -> list[dict]:
+def extract_struct_initializers(
+    tree: tree_sitter.Tree, source_bytes: bytes, type_name: str
+) -> list[dict]:
     """Find static struct initializers for a given type name.
 
     e.g., extract_struct_initializers(tree, source, "PyMethodDef") finds:
@@ -283,7 +295,10 @@ def extract_struct_initializers(tree: tree_sitter.Tree, source_bytes: bytes,
                 # Also check if it's "struct type_name"
                 found = False
                 for desc in walk_descendants(type_node):
-                    if desc.type == "type_identifier" and get_node_text(desc, source_bytes) == type_name:
+                    if (
+                        desc.type == "type_identifier"
+                        and get_node_text(desc, source_bytes) == type_name
+                    ):
                         found = True
                         break
                 if not found:
@@ -303,24 +318,30 @@ def extract_struct_initializers(tree: tree_sitter.Tree, source_bytes: bytes,
             if not var_name:
                 continue
 
-            is_array = "array_declarator" in get_node_text(declarator, source_bytes) or "[" in get_node_text(declarator, source_bytes)
+            is_array = "array_declarator" in get_node_text(
+                declarator, source_bytes
+            ) or "[" in get_node_text(declarator, source_bytes)
 
             init_text = get_node_text(value, source_bytes)
 
-            results.append({
-                "variable_name": var_name,
-                "type_name": type_name,
-                "is_array": is_array,
-                "initializer_text": init_text,
-                "initializer_node": value,
-                "start_line": node.start_point[0] + 1,
-                "end_line": node.end_point[0] + 1,
-            })
+            results.append(
+                {
+                    "variable_name": var_name,
+                    "type_name": type_name,
+                    "is_array": is_array,
+                    "initializer_text": init_text,
+                    "initializer_node": value,
+                    "start_line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
+                }
+            )
 
     return results
 
 
-def extract_static_declarations(tree: tree_sitter.Tree, source_bytes: bytes) -> list[dict]:
+def extract_static_declarations(
+    tree: tree_sitter.Tree, source_bytes: bytes
+) -> list[dict]:
     """Find all file-scope static variable declarations.
 
     Returns list of dicts with keys:
@@ -344,7 +365,10 @@ def extract_static_declarations(tree: tree_sitter.Tree, source_bytes: bytes) -> 
         if not decl_text.lstrip().startswith("static"):
             has_static = False
             for child in node.children:
-                if child.type == "storage_class_specifier" and get_node_text(child, source_bytes) == "static":
+                if (
+                    child.type == "storage_class_specifier"
+                    and get_node_text(child, source_bytes) == "static"
+                ):
                     has_static = True
                     break
             if not has_static:
@@ -375,15 +399,19 @@ def extract_static_declarations(tree: tree_sitter.Tree, source_bytes: bytes) -> 
                 is_pointer = "*" in decl_part
                 is_pyobject = "PyObject" in decl_part
                 init_text = get_node_text(value, source_bytes) if value else None
-                results.append({
-                    "name": var_name,
-                    "type": decl_part.rsplit(var_name, 1)[0].strip() if var_name in decl_part else decl_part,
-                    "is_const": is_const,
-                    "is_pointer": is_pointer,
-                    "is_pyobject": is_pyobject,
-                    "initializer": init_text,
-                    "start_line": node.start_point[0] + 1,
-                })
+                results.append(
+                    {
+                        "name": var_name,
+                        "type": decl_part.rsplit(var_name, 1)[0].strip()
+                        if var_name in decl_part
+                        else decl_part,
+                        "is_const": is_const,
+                        "is_pointer": is_pointer,
+                        "is_pyobject": is_pyobject,
+                        "initializer": init_text,
+                        "start_line": node.start_point[0] + 1,
+                    }
+                )
             elif child.type in ("identifier", "pointer_declarator", "array_declarator"):
                 # Declaration without initializer.
                 var_name = get_declarator_name(child, source_bytes)
@@ -392,21 +420,26 @@ def extract_static_declarations(tree: tree_sitter.Tree, source_bytes: bytes) -> 
                 decl_part = decl_text.strip().rstrip(";").strip()
                 is_pointer = "*" in decl_part
                 is_pyobject = "PyObject" in decl_part
-                results.append({
-                    "name": var_name,
-                    "type": decl_part.rsplit(var_name, 1)[0].strip() if var_name in decl_part else decl_part,
-                    "is_const": is_const,
-                    "is_pointer": is_pointer,
-                    "is_pyobject": is_pyobject,
-                    "initializer": None,
-                    "start_line": node.start_point[0] + 1,
-                })
+                results.append(
+                    {
+                        "name": var_name,
+                        "type": decl_part.rsplit(var_name, 1)[0].strip()
+                        if var_name in decl_part
+                        else decl_part,
+                        "is_const": is_const,
+                        "is_pointer": is_pointer,
+                        "is_pyobject": is_pyobject,
+                        "initializer": None,
+                        "start_line": node.start_point[0] + 1,
+                    }
+                )
 
     return results
 
 
-def find_calls_in_scope(node: tree_sitter.Node, source_bytes: bytes,
-                         api_names: set[str] | None = None) -> list[dict]:
+def find_calls_in_scope(
+    node: tree_sitter.Node, source_bytes: bytes, api_names: set[str] | None = None
+) -> list[dict]:
     """Find all function calls within a given AST node (typically a function body).
 
     If api_names is provided, only return calls to those functions.
@@ -435,19 +468,22 @@ def find_calls_in_scope(node: tree_sitter.Node, source_bytes: bytes,
             if args_text.startswith("(") and args_text.endswith(")"):
                 args_text = args_text[1:-1].strip()
 
-        results.append({
-            "function_name": func_name,
-            "arguments_text": args_text,
-            "node": call_node,
-            "start_line": call_node.start_point[0] + 1,
-            "start_byte": call_node.start_byte,
-        })
+        results.append(
+            {
+                "function_name": func_name,
+                "arguments_text": args_text,
+                "node": call_node,
+                "start_line": call_node.start_point[0] + 1,
+                "start_byte": call_node.start_byte,
+            }
+        )
 
     return results
 
 
-def find_assignments_in_scope(node: tree_sitter.Node, source_bytes: bytes,
-                               var_name: str | None = None) -> list[dict]:
+def find_assignments_in_scope(
+    node: tree_sitter.Node, source_bytes: bytes, var_name: str | None = None
+) -> list[dict]:
     """Find variable assignments within a scope.
 
     If var_name is provided, only return assignments to that variable.
@@ -470,13 +506,15 @@ def find_assignments_in_scope(node: tree_sitter.Node, source_bytes: bytes,
         assigned_var = get_node_text(left, source_bytes)
         if var_name is not None and assigned_var != var_name:
             continue
-        results.append({
-            "variable": assigned_var,
-            "value_text": get_node_text(right, source_bytes),
-            "value_node": right,
-            "is_declaration": False,
-            "start_line": assign_node.start_point[0] + 1,
-        })
+        results.append(
+            {
+                "variable": assigned_var,
+                "value_text": get_node_text(right, source_bytes),
+                "value_node": right,
+                "is_declaration": False,
+                "start_line": assign_node.start_point[0] + 1,
+            }
+        )
 
     # Find declaration-initializations (init_declarator inside declarations).
     for decl_node in walk_descendants(node, "init_declarator"):
@@ -489,13 +527,15 @@ def find_assignments_in_scope(node: tree_sitter.Node, source_bytes: bytes,
             continue
         if var_name is not None and declared_var != var_name:
             continue
-        results.append({
-            "variable": declared_var,
-            "value_text": get_node_text(value, source_bytes),
-            "value_node": value,
-            "is_declaration": True,
-            "start_line": decl_node.start_point[0] + 1,
-        })
+        results.append(
+            {
+                "variable": declared_var,
+                "value_text": get_node_text(value, source_bytes),
+                "value_node": value,
+                "is_declaration": True,
+                "start_line": decl_node.start_point[0] + 1,
+            }
+        )
 
     return results
 
@@ -516,16 +556,19 @@ def find_return_statements(node: tree_sitter.Node, source_bytes: bytes) -> list[
             if child.type not in ("return", ";", "comment"):
                 value_text = get_node_text(child, source_bytes)
                 break
-        results.append({
-            "value_text": value_text,
-            "node": ret_node,
-            "start_line": ret_node.start_point[0] + 1,
-        })
+        results.append(
+            {
+                "value_text": value_text,
+                "node": ret_node,
+                "start_line": ret_node.start_point[0] + 1,
+            }
+        )
     return results
 
 
-def find_struct_members(tree: tree_sitter.Tree, source_bytes: bytes,
-                         struct_name: str) -> list[dict]:
+def find_struct_members(
+    tree: tree_sitter.Tree, source_bytes: bytes, struct_name: str
+) -> list[dict]:
     """Find members of a named struct definition.
 
     Returns list of dicts with keys:
@@ -553,7 +596,10 @@ def find_struct_members(tree: tree_sitter.Tree, source_bytes: bytes,
             if struct_name in type_def_text:
                 # Find the declarator of the typedef.
                 for child in parent.children:
-                    if child.type == "type_identifier" and get_node_text(child, source_bytes) == struct_name:
+                    if (
+                        child.type == "type_identifier"
+                        and get_node_text(child, source_bytes) == struct_name
+                    ):
                         is_match = True
                         break
 
@@ -568,8 +614,6 @@ def find_struct_members(tree: tree_sitter.Tree, source_bytes: bytes,
         for field in body.children:
             if field.type != "field_declaration":
                 continue
-            field_text = get_node_text(field, source_bytes).strip().rstrip(";").strip()
-
             # Find field name from the declarator.
             declarator = field.child_by_field_name("declarator")
             if not declarator:
@@ -588,14 +632,18 @@ def find_struct_members(tree: tree_sitter.Tree, source_bytes: bytes,
             if "*" in get_node_text(declarator, source_bytes):
                 field_type += " *"
 
+            is_pointer = "*" in field_type
             is_pyobject = "PyObject" in field_type
 
-            results.append({
-                "name": field_name,
-                "type": field_type,
-                "is_pyobject": is_pyobject,
-                "start_line": field.start_point[0] + 1,
-            })
+            results.append(
+                {
+                    "name": field_name,
+                    "type": field_type,
+                    "is_pyobject": is_pyobject,
+                    "is_pointer": is_pointer,
+                    "start_line": field.start_point[0] + 1,
+                }
+            )
 
     return results
 
@@ -604,7 +652,7 @@ def strip_comments(source: str) -> str:
     """Remove C comments (/* */ and //) from source text.
     Simpler than tree-sitter for cases where we just need clean text."""
     # Remove block comments.
-    source = re.sub(r'/\*.*?\*/', ' ', source, flags=re.DOTALL)
+    source = re.sub(r"/\*.*?\*/", " ", source, flags=re.DOTALL)
     # Remove line comments.
-    source = re.sub(r'//[^\n]*', ' ', source)
+    source = re.sub(r"//[^\n]*", " ", source)
     return source

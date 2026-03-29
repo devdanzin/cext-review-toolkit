@@ -40,6 +40,8 @@ Collect all findings and organize by type:
 | `missing_gc_flag` | MEDIUM | Type has PyObject* members but no Py_TPFLAGS_HAVE_GC |
 | `heap_type_missing_type_decref` | HIGH | Heap type tp_dealloc does not Py_DECREF(Py_TYPE(self)) |
 | `type_spec_missing_sentinel` | CRITICAL | PyType_Slot array not terminated with {0, NULL} |
+| `init_not_reinit_safe` | HIGH | tp_init allocates resources without checking/cleaning prior state -- second __init__() call leaks |
+| `new_missing_member_init` | MEDIUM | tp_new uses non-zeroing allocator without initializing pointer members -- __new__() without __init__() leaves dangling pointers |
 
 For each finding:
 1. Read the type's struct definition to understand all members.
@@ -86,9 +88,10 @@ For each type defined in the extension, perform a comprehensive slot audit:
    - If `Py_TPFLAGS_HAVE_GC` is set, objects must be allocated with `PyObject_GC_New` and tracked with `PyObject_GC_Track`.
    - If `Py_TPFLAGS_HAVE_GC` is NOT set, objects must NOT be allocated with GC functions.
 
-6. **tp_new / tp_init review**:
-   - Does `tp_new` allocate the object correctly (using `tp_alloc`)?
-   - Does `tp_init` properly handle being called multiple times on the same object?
+6. **tp_new / tp_init review** (critical for C extensions — Python allows calling patterns impossible in C++):
+   - Does `tp_new` allocate the object correctly (using `tp_alloc` which zeros memory)?
+   - Does `tp_new` initialize ALL pointer members to NULL/safe defaults? Python allows `object.__new__(MyType)` without calling `__init__`, so methods may be called on objects where `tp_init` never ran. If `tp_new` doesn't zero pointers, methods that assume `tp_init` ran will dereference uninitialized garbage.
+   - Does `tp_init` properly handle being called multiple times on the same object? Python allows `obj.__init__()` to be called again after construction. If `tp_init` allocates resources (malloc, PyObject_New, fopen, etc.) without first cleaning up existing state, the second call leaks the first call's resources. The fix is either: (a) reject re-init (`if (self->initialized) { PyErr_SetString(...); return -1; }`), or (b) clean up first (run destructor-like logic before re-initializing).
    - For GC types: is `PyObject_GC_Track` called after initialization is complete?
 
 7. **tp_richcompare review**:
@@ -128,7 +131,7 @@ For each confirmed or likely finding, produce a structured entry:
 
 - **File**: `path/to/file.c`
 - **Line(s)**: 123-145
-- **Type**: dealloc_missing_tp_free | dealloc_wrong_free | dealloc_missing_untrack | traverse_missing_member | richcompare_not_incref_notimplemented | missing_gc_flag | heap_type_missing_type_decref | type_spec_missing_sentinel
+- **Type**: dealloc_missing_tp_free | dealloc_wrong_free | dealloc_missing_untrack | traverse_missing_member | richcompare_not_incref_notimplemented | missing_gc_flag | heap_type_missing_type_decref | type_spec_missing_sentinel | init_not_reinit_safe | new_missing_member_init
 - **Classification**: FIX | CONSIDER | POLICY
 - **Confidence**: HIGH | MEDIUM | LOW
 - **Affected Type**: `MyType` (struct `MyTypeObject`)
@@ -147,8 +150,8 @@ For each confirmed or likely finding, produce a structured entry:
 
 ## Classification Rules
 
-- **FIX**: Missing `tp_free` call in `tp_dealloc` (memory leak on every object destruction). `tp_traverse` that does not visit a `PyObject*` member (GC cannot detect cycles, leading to memory leaks). Returning `Py_NotImplemented` without `Py_INCREF` (refcount corruption). Missing `{0, NULL}` sentinel in `PyType_Slot` array (buffer overread, undefined behavior). Missing `Py_DECREF(Py_TYPE(self))` in heap type dealloc (type object leak).
-- **CONSIDER**: Missing `Py_TPFLAGS_HAVE_GC` when the type has `PyObject*` members that could create cycles (potential memory leak if cycles form). Wrong `tp_free` function for a non-subclassable type (works but fragile). Missing `PyObject_GC_UnTrack` in dealloc (potential GC visiting half-destroyed object). Missing `tp_clear` on a GC type with **mutable** `PyObject*` members (GC can detect cycles but cannot break them).
+- **FIX**: Missing `tp_free` call in `tp_dealloc` (memory leak on every object destruction). `tp_traverse` that does not visit a `PyObject*` member (GC cannot detect cycles, leading to memory leaks). Returning `Py_NotImplemented` without `Py_INCREF` (refcount corruption). Missing `{0, NULL}` sentinel in `PyType_Slot` array (buffer overread, undefined behavior). Missing `Py_DECREF(Py_TYPE(self))` in heap type dealloc (type object leak). `tp_init` that allocates resources without re-init guard (resource leak on second `__init__()` call).
+- **CONSIDER**: Missing `Py_TPFLAGS_HAVE_GC` when the type has `PyObject*` members that could create cycles (potential memory leak if cycles form). Wrong `tp_free` function for a non-subclassable type (works but fragile). Missing `PyObject_GC_UnTrack` in dealloc (potential GC visiting half-destroyed object). Missing `tp_clear` on a GC type with **mutable** `PyObject*` members (GC can detect cycles but cannot break them). `tp_new` that uses a non-zeroing allocator without initializing pointer members (`__new__()` without `__init__()` leaves dangling pointers).
 - **ACCEPTABLE**: Missing `tp_clear` on a GC type whose `PyObject*` members are **immutable after construction** (set once in `tp_new`/`tp_init`, never mutated). CPython itself omits `tp_clear` for such types. See the immutable-type exception in the tp_clear review section.
 - **POLICY**: Whether to use heap types vs static types. Whether to make a type GC-capable when cycles are unlikely but possible. Whether to support subclassing (`Py_TPFLAGS_BASETYPE`).
 

@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Enhanced
 - `type-slot-checker` agent: added immutable-type exception for missing `tp_clear`. Types whose `PyObject*` members are set once during construction and never mutated are now classified as ACCEPTABLE (not CONSIDER) when missing `tp_clear`, matching CPython's own convention.
+- `type-slot-checker` agent and `scan_type_slots.py`: added two new checks based on APSW maintainer feedback:
+  - `init_not_reinit_safe`: detects `tp_init` that allocates resources without checking/cleaning prior state. Python allows calling `__init__()` multiple times, so a second call leaks the first call's resources.
+  - `new_missing_member_init`: detects `tp_new` that uses a non-zeroing allocator without initializing pointer members. Python allows `__new__()` without `__init__()`, so methods may dereference uninitialized pointers.
+- `tree_sitter_utils.py`: `find_struct_members` now returns `is_pointer` field for struct member dicts.
 
 ## [0.1.2] - 2026-03-25
 
