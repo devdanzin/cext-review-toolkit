@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+- `docs/reproducer-techniques.md`: Added Technique 5b (file-like objects with malicious methods), Technique 20 (str subclass in `sys.modules` for `PyDict_GetItem` error injection), and Technique 21 (mischievous file-like objects for I/O code). Confirmed on msgspec, astropy, and awkward-cpp.
+
 ## [0.1.5] - 2026-03-29
 
 ### Enhanced

@@ -134,6 +134,33 @@ class EvilDict(dict):
 
 **Useful for**: Testing code that accepts arbitrary mapping/sequence arguments and passes them to Python APIs that dispatch through `tp_as_mapping`/`tp_as_sequence`.
 
+### Technique 5b: File-like objects with malicious methods
+
+A file-like object whose `read()`, `write()`, `seek()`, `fileno()`, or `__fspath__()` raises can expose error-path bugs in I/O code. The key is to control *when* the failure happens — first call vs. second call produces different behavior.
+
+```python
+class DelayedFailFile:
+    """Succeeds on first read, fails on second — exposes mid-parse error handling."""
+    def __init__(self, first_data, exception=MemoryError):
+        self.calls = 0
+        self.first_data = first_data
+        self.exception = exception
+    def read(self, n):
+        self.calls += 1
+        if self.calls == 1:
+            return self.first_data
+        raise self.exception("OOM on second read")
+
+class BadFileno:
+    """fileno() raises but object is callable — exposes fallback-path PyErr_Clear."""
+    def fileno(self):
+        raise MemoryError("OOM in fileno")
+    def __call__(self, size):
+        return b""
+```
+
+**Confirmed on**: awkward-cpp (`fromjsonobj` — MemoryError on second `read()` swallowed by C++ JSON parser, reported as `ValueError: incomplete JSON`), astropy (`IterParser_init` — `BadFileno` MemoryError swallowed by unguarded `PyErr_Clear`)
+
 ---
 
 ## Technique 6: `__del__` that triggers side effects
@@ -498,6 +525,85 @@ StatefulHashMeta._fail = True
 
 ---
 
+## Technique 20: str subclass in `sys.modules` for `PyDict_GetItem` error injection
+
+**Triggers**: `PyDict_GetItem(sys.modules, module_name)` where the C code uses `PyDict_GetItem` (which silently swallows exceptions) instead of `PyDict_GetItemWithError`.
+
+**Bug class**: C code looks up a module in `sys.modules` via `PyDict_GetItem`. If a str subclass with a raising `__eq__` is inserted as a key, the lookup triggers `__eq__` during hash collision resolution. `PyDict_GetItem` silently clears the exception and returns NULL ("not found"). If the C code then dereferences the NULL without proper checking, it crashes. This turns a "safe" `PyDict_GetItem` call into a segfault when combined with a downstream NULL-check bug.
+
+```python
+import sys
+
+class PoisonStr(str):
+    """str subclass whose __eq__ raises during dict lookup."""
+    def __eq__(self, other):
+        raise MemoryError("injected OOM during dict key comparison")
+    def __hash__(self):
+        # Must match the hash of the target module name to trigger __eq__
+        return hash("target_module_name")
+
+# Insert the poison key into sys.modules
+# The hash matches "target_module_name", so any lookup for that module
+# will compare against our PoisonStr, triggering __eq__
+sys.modules[PoisonStr("target_module_name")] = None
+
+# Now any C code that does PyDict_GetItem(sys.modules, "target_module_name")
+# will hit the PoisonStr's __eq__, which raises MemoryError.
+# PyDict_GetItem silently swallows it and returns NULL.
+# If the C code has a bug in its NULL check, it crashes.
+```
+
+**How it works**: `sys.modules` is a regular Python dict. Dict lookups compare keys using `__eq__` when hash values collide. By inserting a str subclass whose `__eq__` raises, we make the lookup fail with an exception that `PyDict_GetItem` silently swallows. The C code receives NULL and — if it has a downstream bug like a typo in the NULL check variable name — dereferences it.
+
+This technique is especially powerful for exposing **compound bugs**: the `PyDict_GetItem` error swallowing alone is not exploitable, but combined with a separate NULL-check bug (wrong variable, missing check, etc.), it becomes a segfault.
+
+**Confirmed on**: msgspec (`structmeta_get_module_ns` — `PyDict_GetItem` error swallowing + typo in NULL check variable name → segfault)
+
+---
+
+## Technique 21: Mischievous file-like objects for I/O code
+
+**Triggers**: C/C++ code that reads from Python file-like objects via `obj.read()`, `obj.write()`, `obj.seek()`, `obj.fileno()`, or `os.fspath(obj)`.
+
+**Bug class**: Three distinct patterns:
+1. **Wrong return type**: `read()` returns `int` instead of `bytes` — exposes missing type checks
+2. **Delayed failure**: First `read()` succeeds (returning partial data), second `read()` raises — exposes mid-operation error handling where the exception propagates through C code that doesn't expect Python exceptions
+3. **Method raises but object has fallback path**: `fileno()` raises but object is callable — exposes unguarded `PyErr_Clear` in fallback chains
+
+```python
+# Pattern 1: Wrong return type
+class WrongTypeFile:
+    def read(self, n):
+        return 42  # Not bytes — triggers type check
+
+# Pattern 2: Delayed failure (most powerful)
+class DelayedOOMFile:
+    def __init__(self):
+        self.calls = 0
+    def read(self, n):
+        self.calls += 1
+        if self.calls == 1:
+            return b'partial data here'
+        raise MemoryError("OOM on second read")
+
+# Pattern 3: Fallback path exploitation
+class FallbackFile:
+    def fileno(self):
+        raise MemoryError("OOM in fileno")
+    def __call__(self, size):
+        return b""  # Callable fallback path
+```
+
+**How it works**: I/O code typically has a "try C file descriptor, fall back to Python read()" pattern. Pattern 3 exploits this: `fileno()` fails with MemoryError, the code falls through to the callable check (which succeeds), and an unguarded `PyErr_Clear` swallows the MemoryError.
+
+Pattern 2 is the most powerful for C++ extensions: the first successful read starts a parsing operation (JSON, XML, etc.), then the second read raises inside the C++ parser's callback. The C++ code typically doesn't distinguish "end of file" from "Python exception during read", so the MemoryError gets converted to a parse error.
+
+**Confirmed on**:
+- awkward-cpp (`fromjsonobj` — DelayedOOMFile MemoryError converted to `ValueError: incomplete JSON object`)
+- astropy (`IterParser_init` — FallbackFile MemoryError swallowed by unguarded `PyErr_Clear` in fileno→callable fallback)
+
+---
+
 ## Applicability Matrix
 
 | Technique | Triggers Bug Class | Needs Special Object | Difficulty |
@@ -521,3 +627,5 @@ StatefulHashMeta._fail = True
 | 17. Memleak measurement | Memory leaks | tracemalloc | Easy |
 | 18. OOM injection | Unchecked allocations, NULL deref on OOM | _testcapi | Easy |
 | 19. Stateful metaclass hash | PyDict_GetItem swallows errors on type-keyed lookups | Metaclass | Medium |
+| 20. str subclass in sys.modules | PyDict_GetItem error injection + compound NULL bugs | str subclass | Hard |
+| 21. Mischievous file-like objects | I/O error handling, mid-parse exception swallowing | Custom class | Easy |
