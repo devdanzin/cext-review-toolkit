@@ -160,3 +160,5 @@ Common fix patterns:
 4. **Cap output.** At most 15 confirmed findings. Note totals if more exist.
 
 5. **Cross-reference with error-path-analyzer.** If that agent also flagged exception handling issues, merge the findings. The error-path-analyzer catches exception clobbering; this agent catches exception swallowing.
+
+6. **Recognize intentional fallback patterns.** When `PyErr_Clear()` follows a failed `PyImport_ImportModule` or `PyObject_GetAttrString` and the code continues with a fallback/default value (e.g., optional import of `_testinternalcapi`), classify as CONSIDER (intentional fallback) rather than FIX. Note that guarding with `PyErr_ExceptionMatches(PyExc_ImportError)` would be more precise but is not required for this pattern.

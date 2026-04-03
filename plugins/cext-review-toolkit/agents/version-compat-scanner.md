@@ -204,3 +204,5 @@ After all findings, include a summary:
 6. **Deprecated APIs often still work.** Deprecation is a signal, not a hard break. Classification should be CONSIDER unless the API has been fully removed in a supported version, in which case it is FIX.
 
 7. **Report at most 20 findings.** Prioritize FIX over CONSIDER over POLICY. Include counts for categories with many findings.
+
+8. **Verify deprecation claims against documentation.** Do not infer deprecation from nearby functions or from the existence of a replacement API. Only flag an API as deprecated if the CPython documentation explicitly states it, or if it appears in `data/deprecated_apis.json`. For example, `PySys_GetObject` is NOT deprecated even though `PySys_GetAttr` was added in 3.13 — they coexist.

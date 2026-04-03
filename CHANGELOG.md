@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- `scan_type_slots.py`: Types inheriting from built-in types (e.g., `PyTuple_Type`) no longer flagged for missing `tp_dealloc` — the base type provides it via inheritance. Based on guppy3 maintainer feedback (Finding 26 false positive).
+- `scan_refcounts.py`: Borrowed refs from immutable containers (`PyTuple_GetItem`, `PyTuple_GET_ITEM`) no longer flagged as `borrowed_ref_across_call` — tuples hold strong refs and can't be mutated. Based on guppy3 maintainer feedback (Finding 16 false positive).
+- `scan_null_checks.py`: Added null-safe API set (`PyObject_InitVar`, `Py_XDECREF`, `PyMem_Free`, etc.) — calls to these APIs are no longer flagged as unchecked dereferences. Based on guppy3 maintainer feedback (Finding 3 false positive).
+
+### Enhanced
+- `refcount-auditor` agent: Added guideline on immutable container borrowed-ref safety.
+- `error-path-analyzer` agent: Added guidelines for sentinel/vtable error propagation and defensive visitor/callback patterns.
+- `pyerr-clear-auditor` agent: Added guideline for intentional fallback patterns (optional import + fallback).
+- `version-compat-scanner` agent: Added guideline to verify deprecation claims against documentation.
+
 ### Documentation
 - `docs/reproducer-techniques.md`: Added Technique 5b (file-like objects with malicious methods), Technique 20 (str subclass in `sys.modules` for `PyDict_GetItem` error injection), and Technique 21 (mischievous file-like objects for I/O code). Confirmed on msgspec, astropy, and awkward-cpp.
 

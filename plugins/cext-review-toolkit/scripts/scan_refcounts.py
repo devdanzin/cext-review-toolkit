@@ -17,38 +17,66 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tree_sitter_utils import (
-    parse_bytes_for_file, extract_functions, find_calls_in_scope,
-    find_assignments_in_scope, find_return_statements,
-    get_node_text, walk_descendants, get_declarator_name,
+    parse_bytes_for_file,
+    extract_functions,
+    find_calls_in_scope,
+    find_return_statements,
+    get_node_text,
 )
 from scan_common import (
-    find_project_root, discover_c_files, load_api_tables,
-    find_assigned_variable, parse_common_args,
+    find_project_root,
+    discover_c_files,
+    load_api_tables,
+    find_assigned_variable,
+    parse_common_args,
 )
 
 
 # APIs that could execute arbitrary Python code (may invalidate borrowed refs).
 _PYTHON_EXECUTING_APIS = {
-    "Py_DECREF", "Py_XDECREF", "Py_CLEAR",
-    "PyObject_SetAttr", "PyObject_SetAttrString",
-    "PyObject_SetItem", "PyObject_DelItem",
-    "PyObject_Call", "PyObject_CallObject",
-    "PyObject_CallFunction", "PyObject_CallMethod",
-    "PyObject_CallNoArgs", "PyObject_CallOneArg",
-    "PyObject_RichCompare", "PyObject_IsTrue", "PyObject_Hash",
-    "PyObject_Str", "PyObject_Repr", "PyObject_Format",
-    "PyObject_Bytes", "PyObject_ASCII",
-    "PyErr_SetObject", "PyErr_Format",
-    "PyObject_GetAttr", "PyObject_GetAttrString",
+    "Py_DECREF",
+    "Py_XDECREF",
+    "Py_CLEAR",
+    "PyObject_SetAttr",
+    "PyObject_SetAttrString",
+    "PyObject_SetItem",
+    "PyObject_DelItem",
+    "PyObject_Call",
+    "PyObject_CallObject",
+    "PyObject_CallFunction",
+    "PyObject_CallMethod",
+    "PyObject_CallNoArgs",
+    "PyObject_CallOneArg",
+    "PyObject_RichCompare",
+    "PyObject_IsTrue",
+    "PyObject_Hash",
+    "PyObject_Str",
+    "PyObject_Repr",
+    "PyObject_Format",
+    "PyObject_Bytes",
+    "PyObject_ASCII",
+    "PyErr_SetObject",
+    "PyErr_Format",
+    "PyObject_GetAttr",
+    "PyObject_GetAttrString",
     "PyObject_GetItem",
 }
 
 _DECREF_APIS = {"Py_DECREF", "Py_XDECREF", "Py_CLEAR", "Py_SETREF"}
 
+# Borrowed-ref APIs on immutable containers. Items borrowed from these
+# containers are safe across Python calls as long as the container itself
+# is alive, because immutable containers hold strong refs to their items
+# and no Python call can mutate them.
+_IMMUTABLE_CONTAINER_BORROWED_APIS = {
+    "PyTuple_GetItem",
+    "PyTuple_GET_ITEM",
+}
+
 
 def _var_in_text(var: str, text: str) -> bool:
     """Check if a variable name appears as a word in text."""
-    return bool(re.search(r'\b' + re.escape(var) + r'\b', text))
+    return bool(re.search(r"\b" + re.escape(var) + r"\b", text))
 
 
 def _check_potential_leaks(func, source_bytes, api_tables):
@@ -93,17 +121,21 @@ def _check_potential_leaks(func, source_bytes, api_tables):
         is_returned = var in return_values
         is_stolen = var in stolen_vars
         if not (is_decrefd or is_returned or is_stolen):
-            findings.append({
-                "type": "potential_leak",
-                "file": "",
-                "function": func["name"],
-                "line": call["start_line"],
-                "confidence": "medium",
-                "detail": (f"New reference from {call['function_name']}() "
-                           f"assigned to '{var}' may not be released"),
-                "api_call": call["function_name"],
-                "variable": var,
-            })
+            findings.append(
+                {
+                    "type": "potential_leak",
+                    "file": "",
+                    "function": func["name"],
+                    "line": call["start_line"],
+                    "confidence": "medium",
+                    "detail": (
+                        f"New reference from {call['function_name']}() "
+                        f"assigned to '{var}' may not be released"
+                    ),
+                    "api_call": call["function_name"],
+                    "variable": var,
+                }
+            )
 
     return findings
 
@@ -151,22 +183,27 @@ def _check_leak_on_error(func, source_bytes, api_tables):
                 parent = er["node"].parent
                 if parent:
                     block_text = get_node_text(parent, source_bytes)
-                    if not _var_in_text(var, block_text) or \
-                       not any(d in block_text for d in ("Py_DECREF", "Py_XDECREF", "Py_CLEAR")):
-                        findings.append({
-                            "type": "potential_leak_on_error",
-                            "file": "",
-                            "function": func["name"],
-                            "line": er["start_line"],
-                            "confidence": "medium",
-                            "detail": (f"Error return at line {er['start_line']} may leak "
-                                       f"'{var}' (acquired at line {call['start_line']} "
-                                       f"via {call['function_name']}())"),
-                            "api_call": call["function_name"],
-                            "variable": var,
-                            "error_return_line": er["start_line"],
-                            "acquire_line": call["start_line"],
-                        })
+                    if not _var_in_text(var, block_text) or not any(
+                        d in block_text for d in ("Py_DECREF", "Py_XDECREF", "Py_CLEAR")
+                    ):
+                        findings.append(
+                            {
+                                "type": "potential_leak_on_error",
+                                "file": "",
+                                "function": func["name"],
+                                "line": er["start_line"],
+                                "confidence": "medium",
+                                "detail": (
+                                    f"Error return at line {er['start_line']} may leak "
+                                    f"'{var}' (acquired at line {call['start_line']} "
+                                    f"via {call['function_name']}())"
+                                ),
+                                "api_call": call["function_name"],
+                                "variable": var,
+                                "error_return_line": er["start_line"],
+                                "acquire_line": call["start_line"],
+                            }
+                        )
     return findings
 
 
@@ -190,6 +227,12 @@ def _check_borrowed_ref_across_call(func, source_bytes, api_tables):
         if borrowed_var is None:
             continue
 
+        # Suppress borrowed refs from immutable containers (e.g. tuples).
+        # The container holds a strong ref to the item, and immutable
+        # containers can't have items removed by Python calls.
+        if call["function_name"] in _IMMUTABLE_CONTAINER_BORROWED_APIS:
+            continue
+
         # Scan forward for an intervening Python-executing call.
         for j in range(i + 1, len(all_calls)):
             intervening = all_calls[j]
@@ -202,50 +245,60 @@ def _check_borrowed_ref_across_call(func, source_bytes, api_tables):
             for k in range(j + 1, len(all_calls)):
                 later = all_calls[k]
                 if _var_in_text(borrowed_var, later["arguments_text"]):
-                    findings.append({
-                        "type": "borrowed_ref_across_call",
-                        "file": "",
-                        "function": func["name"],
-                        "line": call["start_line"],
-                        "confidence": "high",
-                        "detail": (f"Borrowed ref '{borrowed_var}' from "
-                                   f"{call['function_name']}() used after "
-                                   f"{intervening['function_name']}() "
-                                   f"(line {intervening['start_line']}) which could "
-                                   f"invalidate it"),
-                        "borrowed_api": call["function_name"],
-                        "borrowed_var": borrowed_var,
-                        "intervening_call": intervening["function_name"],
-                        "intervening_line": intervening["start_line"],
-                        "use_after_line": later["start_line"],
-                    })
+                    findings.append(
+                        {
+                            "type": "borrowed_ref_across_call",
+                            "file": "",
+                            "function": func["name"],
+                            "line": call["start_line"],
+                            "confidence": "high",
+                            "detail": (
+                                f"Borrowed ref '{borrowed_var}' from "
+                                f"{call['function_name']}() used after "
+                                f"{intervening['function_name']}() "
+                                f"(line {intervening['start_line']}) which could "
+                                f"invalidate it"
+                            ),
+                            "borrowed_api": call["function_name"],
+                            "borrowed_var": borrowed_var,
+                            "intervening_call": intervening["function_name"],
+                            "intervening_line": intervening["start_line"],
+                            "use_after_line": later["start_line"],
+                        }
+                    )
                     found_in_call = True
                     break
 
             if not found_in_call:
                 # Second: used in member access, dereference, or assignment.
-                after_bytes = source_bytes[intervening["node"].end_byte:body.end_byte]
+                after_bytes = source_bytes[intervening["node"].end_byte : body.end_byte]
                 after_text = after_bytes.decode("utf-8", errors="replace")
                 esc = re.escape(borrowed_var)
-                if re.search(r'\b' + esc + r'\s*->', after_text) or \
-                   re.search(r'\*\s*' + esc + r'\b', after_text) or \
-                   re.search(r'=\s*' + esc + r'\s*;', after_text):
-                    findings.append({
-                        "type": "borrowed_ref_across_call",
-                        "file": "",
-                        "function": func["name"],
-                        "line": call["start_line"],
-                        "confidence": "medium",
-                        "detail": (f"Borrowed ref '{borrowed_var}' from "
-                                   f"{call['function_name']}() used after "
-                                   f"{intervening['function_name']}() "
-                                   f"(line {intervening['start_line']}) which "
-                                   f"could invalidate it"),
-                        "borrowed_api": call["function_name"],
-                        "borrowed_var": borrowed_var,
-                        "intervening_call": intervening["function_name"],
-                        "intervening_line": intervening["start_line"],
-                    })
+                if (
+                    re.search(r"\b" + esc + r"\s*->", after_text)
+                    or re.search(r"\*\s*" + esc + r"\b", after_text)
+                    or re.search(r"=\s*" + esc + r"\s*;", after_text)
+                ):
+                    findings.append(
+                        {
+                            "type": "borrowed_ref_across_call",
+                            "file": "",
+                            "function": func["name"],
+                            "line": call["start_line"],
+                            "confidence": "medium",
+                            "detail": (
+                                f"Borrowed ref '{borrowed_var}' from "
+                                f"{call['function_name']}() used after "
+                                f"{intervening['function_name']}() "
+                                f"(line {intervening['start_line']}) which "
+                                f"could invalidate it"
+                            ),
+                            "borrowed_api": call["function_name"],
+                            "borrowed_var": borrowed_var,
+                            "intervening_call": intervening["function_name"],
+                            "intervening_line": intervening["start_line"],
+                        }
+                    )
 
             break  # Only check the first intervening call.
 
@@ -270,29 +323,34 @@ def _check_stolen_ref_misuse(func, source_bytes, api_tables):
             continue
         stolen_var = args[-1]
         # Strip casts.
-        stolen_var = re.sub(r'\([^)]+\)\s*', '', stolen_var).strip()
-        if not re.match(r'^\w+$', stolen_var):
+        stolen_var = re.sub(r"\([^)]+\)\s*", "", stolen_var).strip()
+        if not re.match(r"^\w+$", stolen_var):
             continue
 
         # Check if the variable is used after the steal call.
         for j in range(i + 1, len(all_calls)):
             later = all_calls[j]
-            if later["function_name"] in _DECREF_APIS and \
-               _var_in_text(stolen_var, later["arguments_text"]):
-                findings.append({
-                    "type": "stolen_ref_not_nulled",
-                    "file": "",
-                    "function": func["name"],
-                    "line": later["start_line"],
-                    "confidence": "high",
-                    "detail": (f"Variable '{stolen_var}' DECREF'd at line "
-                               f"{later['start_line']} after being stolen by "
-                               f"{call['function_name']}() at line "
-                               f"{call['start_line']}"),
-                    "steal_api": call["function_name"],
-                    "variable": stolen_var,
-                    "steal_line": call["start_line"],
-                })
+            if later["function_name"] in _DECREF_APIS and _var_in_text(
+                stolen_var, later["arguments_text"]
+            ):
+                findings.append(
+                    {
+                        "type": "stolen_ref_not_nulled",
+                        "file": "",
+                        "function": func["name"],
+                        "line": later["start_line"],
+                        "confidence": "high",
+                        "detail": (
+                            f"Variable '{stolen_var}' DECREF'd at line "
+                            f"{later['start_line']} after being stolen by "
+                            f"{call['function_name']}() at line "
+                            f"{call['start_line']}"
+                        ),
+                        "steal_api": call["function_name"],
+                        "variable": stolen_var,
+                        "steal_line": call["start_line"],
+                    }
+                )
                 break
 
     return findings
@@ -330,9 +388,12 @@ def analyze(target: str, *, max_files: int = 0) -> dict:
 
         for func in functions:
             total_functions += 1
-            for checker in (_check_potential_leaks, _check_leak_on_error,
-                            _check_borrowed_ref_across_call,
-                            _check_stolen_ref_misuse):
+            for checker in (
+                _check_potential_leaks,
+                _check_leak_on_error,
+                _check_borrowed_ref_across_call,
+                _check_stolen_ref_misuse,
+            ):
                 for f in checker(func, source_bytes, api_tables):
                     f["file"] = rel
                     findings.append(f)

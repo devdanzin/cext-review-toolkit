@@ -16,48 +16,91 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tree_sitter_utils import (
-    parse_bytes_for_file, extract_functions, find_calls_in_scope,
-    get_node_text, walk_descendants, get_declarator_name,
+    parse_bytes_for_file,
+    extract_functions,
+    find_calls_in_scope,
+    get_node_text,
 )
 from scan_common import (
-    find_project_root, discover_c_files, load_api_tables,
-    find_assigned_variable, PYARG_PARSE_APIS, parse_common_args,
+    find_project_root,
+    discover_c_files,
+    load_api_tables,
+    find_assigned_variable,
+    PYARG_PARSE_APIS,
+    parse_common_args,
 )
 
 
 # Macros that dereference their argument — crash if NULL.
 _DEREF_MACROS = {
-    "PyBytes_AS_STRING", "PyBytes_GET_SIZE",
-    "PyByteArray_AS_STRING", "PyByteArray_GET_SIZE",
-    "PyList_GET_ITEM", "PyList_GET_SIZE", "PyList_SET_ITEM",
-    "PyTuple_GET_ITEM", "PyTuple_GET_SIZE", "PyTuple_SET_ITEM",
-    "PyUnicode_GET_LENGTH", "PyUnicode_READ_CHAR",
-    "PyUnicode_DATA", "PyUnicode_READ",
+    "PyBytes_AS_STRING",
+    "PyBytes_GET_SIZE",
+    "PyByteArray_AS_STRING",
+    "PyByteArray_GET_SIZE",
+    "PyList_GET_ITEM",
+    "PyList_GET_SIZE",
+    "PyList_SET_ITEM",
+    "PyTuple_GET_ITEM",
+    "PyTuple_GET_SIZE",
+    "PyTuple_SET_ITEM",
+    "PyUnicode_GET_LENGTH",
+    "PyUnicode_READ_CHAR",
+    "PyUnicode_DATA",
+    "PyUnicode_READ",
     "PyFloat_AS_DOUBLE",
-    "PySequence_Fast_GET_ITEM", "PySequence_Fast_GET_SIZE",
+    "PySequence_Fast_GET_ITEM",
+    "PySequence_Fast_GET_SIZE",
     "PyWeakref_GET_OBJECT",
-    "PyCell_GET", "PyCell_SET",
-    "Py_SIZE", "Py_TYPE", "Py_REFCNT",
+    "PyCell_GET",
+    "PyCell_SET",
+    "Py_SIZE",
+    "Py_TYPE",
+    "Py_REFCNT",
 }
 
 # APIs that return NULL on encoding/conversion failure.
 _NULLABLE_CONVERSION_APIS = {
-    "PyUnicode_AsASCIIString", "PyUnicode_AsUTF8String",
-    "PyUnicode_AsEncodedString", "PyUnicode_AsUTF8AndSize",
-    "PyObject_GetAttr", "PyObject_GetAttrString",
+    "PyUnicode_AsASCIIString",
+    "PyUnicode_AsUTF8String",
+    "PyUnicode_AsEncodedString",
+    "PyUnicode_AsUTF8AndSize",
+    "PyObject_GetAttr",
+    "PyObject_GetAttrString",
 }
 
 _ALLOC_APIS = {
-    "PyMem_Malloc", "PyMem_Calloc", "PyMem_Realloc",
-    "PyObject_Malloc", "PyObject_Calloc", "PyObject_Realloc",
-    "PyMem_New", "PyMem_Resize",
-    "malloc", "calloc", "realloc",
+    "PyMem_Malloc",
+    "PyMem_Calloc",
+    "PyMem_Realloc",
+    "PyObject_Malloc",
+    "PyObject_Calloc",
+    "PyObject_Realloc",
+    "PyMem_New",
+    "PyMem_Resize",
+    "malloc",
+    "calloc",
+    "realloc",
 }
 
 # APIs that return borrowed refs (NULL means not found, not always error).
 _BORROWED_NULL_APIS = {
-    "PyDict_GetItem", "PyDict_GetItemString",
+    "PyDict_GetItem",
+    "PyDict_GetItemString",
     "PyDict_GetItemWithError",
+}
+
+# APIs that handle NULL arguments safely (no dereference on NULL input).
+# Passing NULL to these is not a bug — they check internally.
+_NULL_SAFE_APIS = {
+    "Py_XDECREF",
+    "Py_XINCREF",
+    "Py_CLEAR",
+    "PyMem_Free",
+    "PyMem_RawFree",
+    "PyObject_Free",
+    "PyBuffer_Release",
+    "PyObject_InitVar",  # Checks ob != NULL (CPython Objects/object.c:542)
+    "free",
 }
 
 
@@ -69,18 +112,20 @@ def _has_null_check_after(var: str, after_text: str) -> bool:
     - if (unlikely(var == ((type)NULL)))
     - if (!var) __PYX_ERR(...)
     """
-    return bool(re.search(
-        r'if\s*\(\s*' + re.escape(var) + r'\s*==\s*NULL|'
-        r'if\s*\(\s*!\s*' + re.escape(var) + r'\b|'
-        r'if\s*\(\s*' + re.escape(var) + r'\s*!=\s*NULL|'
-        r'if\s*\(\s*' + re.escape(var) + r'\s*\)|'
-        # Cython: if (unlikely(!var)) or if (unlikely(var == ...NULL...))
-        r'if\s*\(\s*unlikely\s*\(\s*!' + re.escape(var) + r'\b|'
-        r'if\s*\(\s*unlikely\s*\(\s*' + re.escape(var) + r'\s*==|'
-        # __PYX_ERR as error handler (implies a preceding NULL check)
-        r'if\s*\([^)]*' + re.escape(var) + r'[^)]*\)\s*\{?\s*__PYX_ERR',
-        after_text
-    ))
+    return bool(
+        re.search(
+            r"if\s*\(\s*" + re.escape(var) + r"\s*==\s*NULL|"
+            r"if\s*\(\s*!\s*" + re.escape(var) + r"\b|"
+            r"if\s*\(\s*" + re.escape(var) + r"\s*!=\s*NULL|"
+            r"if\s*\(\s*" + re.escape(var) + r"\s*\)|"
+            # Cython: if (unlikely(!var)) or if (unlikely(var == ...NULL...))
+            r"if\s*\(\s*unlikely\s*\(\s*!" + re.escape(var) + r"\b|"
+            r"if\s*\(\s*unlikely\s*\(\s*" + re.escape(var) + r"\s*==|"
+            # __PYX_ERR as error handler (implies a preceding NULL check)
+            r"if\s*\([^)]*" + re.escape(var) + r"[^)]*\)\s*\{?\s*__PYX_ERR",
+            after_text,
+        )
+    )
 
 
 def _check_unchecked_alloc(func, source_bytes, api_tables):
@@ -95,7 +140,7 @@ def _check_unchecked_alloc(func, source_bytes, api_tables):
         if not var:
             continue
 
-        after_text = body_text[call["node"].end_byte - body.start_byte:]
+        after_text = body_text[call["node"].end_byte - body.start_byte :]
         if _has_null_check_after(var, after_text):
             continue
 
@@ -104,17 +149,21 @@ def _check_unchecked_alloc(func, source_bytes, api_tables):
         if parent and parent.type == "return_statement":
             continue
 
-        findings.append({
-            "type": "unchecked_alloc",
-            "file": "",
-            "function": func["name"],
-            "line": call["start_line"],
-            "confidence": "high",
-            "detail": (f"Return value of {call['function_name']}() "
-                       f"assigned to '{var}' without NULL check"),
-            "api_call": call["function_name"],
-            "variable": var,
-        })
+        findings.append(
+            {
+                "type": "unchecked_alloc",
+                "file": "",
+                "function": func["name"],
+                "line": call["start_line"],
+                "confidence": "high",
+                "detail": (
+                    f"Return value of {call['function_name']}() "
+                    f"assigned to '{var}' without NULL check"
+                ),
+                "api_call": call["function_name"],
+                "variable": var,
+            }
+        )
 
     return findings
 
@@ -134,39 +183,47 @@ def _check_deref_before_check(func, source_bytes, api_tables):
         if not var:
             continue
 
-        after_text = body_text[call["node"].end_byte - body.start_byte:]
+        after_text = body_text[call["node"].end_byte - body.start_byte :]
 
         # Look for dereference (var->, *var) before NULL check.
-        deref_match = re.search(
-            re.escape(var) + r'\s*->', after_text
-        )
+        deref_match = re.search(re.escape(var) + r"\s*->", after_text)
         null_check_match = re.search(
-            r'if\s*\(\s*(?:!' + re.escape(var) + r'|' +
-            re.escape(var) + r'\s*==\s*NULL)',
-            after_text
+            r"if\s*\(\s*(?:!"
+            + re.escape(var)
+            + r"|"
+            + re.escape(var)
+            + r"\s*==\s*NULL)",
+            after_text,
         )
 
-        if deref_match and (not null_check_match or
-                            deref_match.start() < null_check_match.start()):
-            deref_line = call["start_line"] + after_text[:deref_match.start()].count('\n')
-            findings.append({
-                "type": "deref_before_check",
-                "file": "",
-                "function": func["name"],
-                "line": deref_line,
-                "confidence": "medium",
-                "detail": (f"Pointer '{var}' (from {call['function_name']}()) "
-                           f"dereferenced before NULL check"),
-                "api_call": call["function_name"],
-                "variable": var,
-            })
+        if deref_match and (
+            not null_check_match or deref_match.start() < null_check_match.start()
+        ):
+            deref_line = call["start_line"] + after_text[: deref_match.start()].count(
+                "\n"
+            )
+            findings.append(
+                {
+                    "type": "deref_before_check",
+                    "file": "",
+                    "function": func["name"],
+                    "line": deref_line,
+                    "confidence": "medium",
+                    "detail": (
+                        f"Pointer '{var}' (from {call['function_name']}()) "
+                        f"dereferenced before NULL check"
+                    ),
+                    "api_call": call["function_name"],
+                    "variable": var,
+                }
+            )
 
     return findings
 
 
 def _var_in_text(var: str, text: str) -> bool:
     """Check if a variable name appears as a word in text."""
-    return bool(re.search(r'\b' + re.escape(var) + r'\b', text))
+    return bool(re.search(r"\b" + re.escape(var) + r"\b", text))
 
 
 def _check_deref_macro_on_unchecked(func, source_bytes, api_tables):
@@ -187,13 +244,19 @@ def _check_deref_macro_on_unchecked(func, source_bytes, api_tables):
         var = find_assigned_variable(call["node"], source_bytes)
         if var:
             nullable_vars[var] = (
-                call["function_name"], call["start_line"], call["start_byte"])
+                call["function_name"],
+                call["start_line"],
+                call["start_byte"],
+            )
 
     # Check if any deref macro is called with a nullable var
     # without an intervening NULL check.
     body_text = get_node_text(body, source_bytes)
 
     for call in all_calls:
+        # Skip null-safe APIs that handle NULL arguments internally.
+        if call["function_name"] in _NULL_SAFE_APIS:
+            continue
         if call["function_name"] not in _DEREF_MACROS:
             continue
 
@@ -203,29 +266,36 @@ def _check_deref_macro_on_unchecked(func, source_bytes, api_tables):
                 continue
 
             between_text = body_text[
-                api_byte - body.start_byte:call["start_byte"] - body.start_byte]
-            has_null_check = bool(re.search(
-                r'\bif\s*\(\s*' + re.escape(var) + r'\s*==\s*NULL|'
-                r'if\s*\(\s*!\s*' + re.escape(var) + r'\b|'
-                r'if\s*\(\s*' + re.escape(var) + r'\s*!=\s*NULL',
-                between_text
-            ))
+                api_byte - body.start_byte : call["start_byte"] - body.start_byte
+            ]
+            has_null_check = bool(
+                re.search(
+                    r"\bif\s*\(\s*" + re.escape(var) + r"\s*==\s*NULL|"
+                    r"if\s*\(\s*!\s*" + re.escape(var) + r"\b|"
+                    r"if\s*\(\s*" + re.escape(var) + r"\s*!=\s*NULL",
+                    between_text,
+                )
+            )
 
             if not has_null_check:
-                findings.append({
-                    "type": "deref_macro_on_unchecked",
-                    "file": "",
-                    "function": func["name"],
-                    "line": call["start_line"],
-                    "confidence": "high",
-                    "detail": (f"{call['function_name']}({var}) at line "
-                               f"{call['start_line']} — '{var}' from "
-                               f"{api}() (line {api_line}) may be NULL"),
-                    "macro": call["function_name"],
-                    "variable": var,
-                    "source_api": api,
-                    "source_line": api_line,
-                })
+                findings.append(
+                    {
+                        "type": "deref_macro_on_unchecked",
+                        "file": "",
+                        "function": func["name"],
+                        "line": call["start_line"],
+                        "confidence": "high",
+                        "detail": (
+                            f"{call['function_name']}({var}) at line "
+                            f"{call['start_line']} — '{var}' from "
+                            f"{api}() (line {api_line}) may be NULL"
+                        ),
+                        "macro": call["function_name"],
+                        "variable": var,
+                        "source_api": api,
+                        "source_line": api_line,
+                    }
+                )
 
     return findings
 
@@ -240,8 +310,12 @@ def _check_unchecked_pyarg_parse(func, source_bytes, api_tables):
         checked = False
         node = call["node"].parent
         while node and node != body:
-            if node.type in ("if_statement", "parenthesized_expression",
-                             "unary_expression", "binary_expression"):
+            if node.type in (
+                "if_statement",
+                "parenthesized_expression",
+                "unary_expression",
+                "binary_expression",
+            ):
                 checked = True
                 break
             if node.type == "expression_statement":
@@ -249,15 +323,17 @@ def _check_unchecked_pyarg_parse(func, source_bytes, api_tables):
             node = node.parent
 
         if not checked:
-            findings.append({
-                "type": "unchecked_pyarg_parse",
-                "file": "",
-                "function": func["name"],
-                "line": call["start_line"],
-                "confidence": "high",
-                "detail": f"{call['function_name']}() return value not checked",
-                "api_call": call["function_name"],
-            })
+            findings.append(
+                {
+                    "type": "unchecked_pyarg_parse",
+                    "file": "",
+                    "function": func["name"],
+                    "line": call["start_line"],
+                    "confidence": "high",
+                    "detail": f"{call['function_name']}() return value not checked",
+                    "api_call": call["function_name"],
+                }
+            )
 
     return findings
 
@@ -294,10 +370,12 @@ def analyze(target: str, *, max_files: int = 0) -> dict:
 
         for func in functions:
             total_functions += 1
-            for checker in (_check_unchecked_alloc,
-                            _check_deref_before_check,
-                            _check_deref_macro_on_unchecked,
-                            _check_unchecked_pyarg_parse):
+            for checker in (
+                _check_unchecked_alloc,
+                _check_deref_before_check,
+                _check_deref_macro_on_unchecked,
+                _check_unchecked_pyarg_parse,
+            ):
                 for f in checker(func, source_bytes, api_tables):
                     f["file"] = rel
                     findings.append(f)
