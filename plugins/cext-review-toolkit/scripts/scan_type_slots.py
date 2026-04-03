@@ -24,6 +24,43 @@ from tree_sitter_utils import (
 )
 from scan_common import find_project_root, discover_c_files, parse_common_args
 
+# Built-in types that provide dealloc/traverse/clear via inheritance.
+# Types with tp_base set to one of these don't need explicit slots.
+_BUILTIN_TYPES_WITH_DEALLOC = frozenset(
+    {
+        "&PyTuple_Type",
+        "&PyList_Type",
+        "&PyDict_Type",
+        "&PyUnicode_Type",
+        "&PyLong_Type",
+        "&PyFloat_Type",
+        "&PyBytes_Type",
+        "&PyByteArray_Type",
+        "&PySet_Type",
+        "&PyFrozenSet_Type",
+        "&PyType_Type",
+        "&PyBaseObject_Type",
+    }
+)
+
+
+def _base_provides_slot(type_info: dict, slot: str) -> bool:
+    """Check if the type's base class provides the given slot via inheritance.
+
+    When tp_base is set to a known built-in type, that type provides
+    dealloc, traverse, and clear via inheritance — the subtype doesn't
+    need to define them explicitly.
+    """
+    base = type_info.get("base_type")
+    if not base:
+        return False
+    base = base.strip().rstrip(",").strip()
+    if base in _BUILTIN_TYPES_WITH_DEALLOC:
+        return True
+    # Also handle "& PyTuple_Type" (with space after &).
+    normalized = base.replace(" ", "")
+    return normalized in _BUILTIN_TYPES_WITH_DEALLOC
+
 
 def _find_func_by_name(functions: list[dict], name: str) -> dict | None:
     """Find a function definition by name."""
@@ -168,6 +205,11 @@ def _check_dealloc_completeness(
     struct_name = type_info.get("struct_name")
 
     if not dealloc_name or not struct_name:
+        return findings
+
+    # If the type inherits from a built-in type (e.g. PyTuple_Type),
+    # the base dealloc handles member cleanup — don't flag missing XDECREF.
+    if _base_provides_slot(type_info, "tp_dealloc"):
         return findings
 
     dealloc_name = re.sub(r"\([^)]*\)\s*", "", dealloc_name).strip()
@@ -620,6 +662,7 @@ def _extract_type_infos(tree, source_bytes: bytes, functions: list[dict]) -> lis
             "richcompare_func": fields.get("tp_richcompare"),
             "init_func": fields.get("tp_init"),
             "new_func": fields.get("tp_new"),
+            "base_type": fields.get("tp_base"),
             "struct_name": _get_struct_name_from_type(fields, source_text),
             "has_gc": "Py_TPFLAGS_HAVE_GC" in flags_text,
             "is_heap_type": "Py_TPFLAGS_HEAPTYPE" in flags_text,

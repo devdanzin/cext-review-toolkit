@@ -145,3 +145,7 @@ If external tools are available:
 5. **PyArg_ParseTupleAndKeywords with the `$` marker**: Arguments after `$` in the format string are keyword-only. Verify that the keywords array matches the format string.
 
 6. **Report at most 20 findings.** If there are more, prioritize by severity and confidence. Mention the total count.
+
+7. **Recognize sentinel/vtable error propagation patterns.** Some extensions use sentinel objects (e.g., an `xt_error` struct with error-returning methods) to handle errors via vtable dispatch. When the error-setting function is called immediately before the sentinel method with no intervening Python API calls, the exception is still pending — this is not a "NULL without exception" bug. Only flag if there are intervening calls that could clear the exception.
+
+8. **Recognize defensive visitor/callback patterns.** When a function passes potentially-NULL values to a callback/visitor, check if all known visitors handle NULL defensively (e.g., checking their arguments, recording errors in a "sticky error" field in the callback arg struct). If the protocol is designed for defensive callbacks, classify as CONSIDER rather than FIX.

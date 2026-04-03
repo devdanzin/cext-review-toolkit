@@ -117,3 +117,5 @@ For each confirmed or likely finding, produce a structured entry:
 7. **Consider the full function, not just the flagged line.** A finding at line 100 might be a false positive because of a cleanup label at line 200. Always read the entire function.
 
 8. **Report at most 20 findings.** If there are more, prioritize by severity and confidence. Mention the total count and note that lower-priority findings were omitted.
+
+9. **Borrowed refs from immutable containers are safe if the container is alive.** When a borrowed reference comes from `PyTuple_GetItem`/`PyTuple_GET_ITEM`, the tuple holds a strong reference to the item. Since tuples are immutable, no Python call can remove items from them. As long as the function holds a strong reference to the tuple (e.g., it's a function parameter or a local with Py_INCREF'd ownership), the borrowed ref is safe across intervening Python calls. Do NOT flag these as `borrowed_ref_across_call`. This does NOT apply to mutable containers like lists or dicts.
