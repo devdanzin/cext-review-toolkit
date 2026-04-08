@@ -43,6 +43,8 @@ Parse arguments into three categories:
 - `summary` → summary tier only (faster)
 - `parallel` → run agents concurrently where possible
 - `--max-parallel N` → cap concurrent agents per group (default: 2)
+- `--runs N` → run agents N times (default: 1). Run 2+ are independent naive passes. Findings are deduplicated across runs. If run 2 finds 0 new findings, report "high confidence — converged on first pass."
+- `--informed-reruns` → when used with `--runs 3`, run 3 agents receive a summary of runs 1-2 findings with the instruction: "These bugs were already found. Look at ADJACENT code, unexplored error paths, and patterns similar to these confirmed bugs that the prior runs might have missed." This targets the informed-rerun technique that found 33% more bugs on simplejson.
 
 ## Execution Workflow
 
@@ -210,33 +212,55 @@ G = No FIX findings | Y = 1-3 FIX findings | R = 4+ FIX findings
 
 ## Findings by Priority
 
-### Must Fix (FIX)
-[Crash risks, memory corruption, reference counting bugs]
+**Use global non-restarting numbering**: number ALL findings sequentially across all sections. FIX findings first (1-N), then CONSIDER (N+1-M), then POLICY (M+1-P). Use these same numbers in the action plan. This makes it easy to reference "Finding 37" in issue trackers and emails.
 
-### Should Consider (CONSIDER)
-[Improvement opportunities, modernization, compatibility]
+### Must Fix (FIX) — N
+
+| # | Finding | File:Line | Agents |
+|---|---------|-----------|--------|
+| 1 | [Description] | [file:line] | [which agents found it] |
+
+### Should Consider (CONSIDER) — M
+
+| # | Finding | File:Line |
+|---|---------|-----------|
+| N+1 | [Description] | [file:line] |
 
 ### Tensions
 [Where agents disagree or trade-offs exist]
 
-### Policy Decisions (POLICY)
-[Team-level decisions: init style, ABI, version support]
+### Policy Decisions (POLICY) — P
+
+| # | Finding |
+|---|---------|
+| M+1 | [Description] |
 
 ## Strengths
 [What the extension does well -- correct patterns, good error handling, etc.]
 
+## Code Removal Opportunities
+
+Check `<plugin_root>/data/deprecated_apis.json` `code_removal_opportunities` section. For each entry, search the codebase for the `replaces_pattern` and report how many lines could be removed. Example:
+
+- **PyModule_AddType** (3.10+): replaces `PyType_FromSpec` + `PyType_Ready` + `Py_INCREF` + `PyModule_AddObject` chain. Est. 4-8 lines saved per type.
+- **PyImport_ImportModuleAttrString** (3.14+): replaces `PyImport_ImportModule` + `PyObject_GetAttrString` + `Py_DECREF(module)`. Est. 5-8 lines per import+getattr.
+
+Only include entries where the extension's minimum Python version supports the replacement API.
+
 ## Recommended Action Plan
 
+Reference findings by their global number:
+
 ### Immediate (FIX items)
-1. [Highest-impact safety fix]
-2. [Next]
+1. [Fix Finding N — description]
+2. [Fix Finding M — description]
 
 ### Short-term (CONSIDER items)
-1. [Quality improvement]
-2. [Modernization step]
+1. [Finding N+1 — description]
+2. [Finding N+2 — description]
 
 ### Longer-term (POLICY)
-1. [Strategic decisions]
+1. [Finding M+1 — description]
 ```
 
 ## How Extension Discovery Context Flows

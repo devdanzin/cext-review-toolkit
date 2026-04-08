@@ -643,6 +643,110 @@ def _check_type_spec_sentinel(tree, source_bytes: bytes):
     return findings
 
 
+# Expected parameter counts for each METH_* flag combination.
+_METH_PARAM_COUNTS = {
+    "METH_NOARGS": 2,       # (self, Py_UNUSED(ignored)) — CPython passes NULL
+    "METH_O": 2,            # (self, arg)
+    "METH_VARARGS": 2,      # (self, args)
+    "METH_KEYWORDS": 3,     # (self, args, kwargs) — with METH_VARARGS
+    "METH_FASTCALL": 3,     # (self, args, nargs)
+    "METH_FASTCALL_KW": 4,  # (self, args, nargs, kwnames)
+    "METH_METHOD": 4,       # (defining_class, self, args, nargs) — min, +1 for kwnames
+}
+
+
+def _check_method_signatures(tree, source_bytes: bytes, functions: list[dict]):
+    """Check that PyMethodDef function signatures match METH_* flags."""
+    findings = []
+
+    method_tables = extract_struct_initializers(tree, source_bytes, "PyMethodDef")
+    func_by_name = {f["name"]: f for f in functions}
+
+    for table in method_tables:
+        if not table["is_array"]:
+            continue
+
+        init_text = strip_comments(table["initializer_text"])
+
+        # Parse entries: {name, func, flags, doc}
+        # Each entry is between { and }
+        entries = re.findall(
+            r"\{\s*\"([^\"]+)\"\s*,\s*"         # name string
+            r"(?:\([^)]*\)\s*)?(\w+)\s*,\s*"    # func (possibly cast)
+            r"([^,}]+?)\s*,"                     # flags
+            r"[^}]*\}",                          # doc + close
+            init_text,
+        )
+
+        for method_name, func_name, flags_str in entries:
+            flags_str = flags_str.strip()
+
+            # Determine expected param count from flags
+            has_keywords = "METH_KEYWORDS" in flags_str
+            has_fastcall = "METH_FASTCALL" in flags_str
+            has_method = "METH_METHOD" in flags_str
+
+            if has_method:
+                expected = 5 if has_keywords else 4
+            elif has_fastcall:
+                expected = 4 if has_keywords else 3
+            elif has_keywords:
+                expected = 3  # METH_VARARGS | METH_KEYWORDS
+            elif "METH_O" in flags_str:
+                expected = 2
+            elif "METH_NOARGS" in flags_str:
+                expected = 2
+            elif "METH_VARARGS" in flags_str:
+                expected = 2
+            else:
+                continue  # Unknown flags
+
+            # Look up the function
+            func = func_by_name.get(func_name)
+            if func is None:
+                continue
+
+            # Count parameters
+            params_str = func["parameters"]
+            if not params_str or params_str.strip() == "void":
+                actual = 0
+            else:
+                # Split by comma, but be careful with function pointer params
+                depth = 0
+                count = 1
+                for ch in params_str:
+                    if ch in "(<":
+                        depth += 1
+                    elif ch in ")>":
+                        depth -= 1
+                    elif ch == "," and depth == 0:
+                        count += 1
+                actual = count
+
+            if actual != expected:
+                flags_desc = flags_str.replace("|", " | ").strip()
+                findings.append(
+                    {
+                        "type": "method_signature_mismatch",
+                        "file": "",
+                        "function": func_name,
+                        "line": func["start_line"],
+                        "confidence": "high",
+                        "detail": (
+                            f"Method '{method_name}' registered with {flags_desc} "
+                            f"(expects {expected} params) but {func_name}() "
+                            f"has {actual} params"
+                        ),
+                        "method_name": method_name,
+                        "flags": flags_str,
+                        "expected_params": expected,
+                        "actual_params": actual,
+                    }
+                )
+
+    return findings
+
+
 def _extract_type_infos(tree, source_bytes: bytes, functions: list[dict]) -> list[dict]:
     """Extract type definition information from PyTypeObject and PyType_Spec."""
     type_infos = []
@@ -770,6 +874,9 @@ def analyze(target: str, *, max_files: int = 0) -> dict:
 
         # File-level checks.
         for f in _check_type_spec_sentinel(tree, source_bytes):
+            f["file"] = rel
+            findings.append(f)
+        for f in _check_method_signatures(tree, source_bytes, functions):
             f["file"] = rel
             findings.append(f)
 

@@ -206,3 +206,5 @@ After all findings, include a summary:
 7. **Report at most 20 findings.** Prioritize FIX over CONSIDER over POLICY. Include counts for categories with many findings.
 
 8. **Verify deprecation claims against documentation.** Do not infer deprecation from nearby functions or from the existence of a replacement API. Only flag an API as deprecated if the CPython documentation explicitly states it, or if it appears in `data/deprecated_apis.json`. For example, `PySys_GetObject` is NOT deprecated even though `PySys_GetAttr` was added in 3.13 — they coexist.
+
+9. **Suggest code removal, not just replacement.** Check `data/deprecated_apis.json` `code_removal_opportunities` section. When the extension's minimum Python version supports a consolidating API (e.g., `PyModule_AddType` on 3.10+), report how many lines of boilerplate could be deleted. Maintainers prefer removing code over adding code. Example: "19 type registrations using `PyType_FromSpec` + `PyType_Ready` + `Py_INCREF` + `PyModule_AddObject` could each be replaced by a single `PyModule_AddType` call, removing ~100 lines."

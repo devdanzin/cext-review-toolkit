@@ -594,5 +594,52 @@ class TestNewAndInitPartialState(unittest.TestCase):
             self.assertEqual(len(partial), 0)
 
 
+METHOD_SIG_MISMATCH = """\
+#include <Python.h>
+
+static PyObject *
+wrong_noargs(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+correct_noargs(PyObject *self, PyObject *Py_UNUSED(ignored))
+{
+    Py_RETURN_NONE;
+}
+
+static PyMethodDef methods[] = {
+    {"wrong", (PyCFunction)wrong_noargs, METH_NOARGS, NULL},
+    {"correct", (PyCFunction)correct_noargs, METH_NOARGS, NULL},
+    {NULL, NULL, 0, NULL}
+};
+"""
+
+
+class TestMethodSignatures(unittest.TestCase):
+    """Test PyMethodDef signature validation against METH_* flags."""
+
+    def test_detects_noargs_mismatch(self):
+        """Detect METH_NOARGS function with 3 params (should be 2)."""
+        with TempExtension({"ext.c": METHOD_SIG_MISMATCH}) as root:
+            result = type_slots.analyze(str(root / "ext.c"))
+            mismatches = [f for f in result["findings"]
+                          if f["type"] == "method_signature_mismatch"]
+            self.assertEqual(len(mismatches), 1)
+            self.assertEqual(mismatches[0]["method_name"], "wrong")
+            self.assertEqual(mismatches[0]["expected_params"], 2)
+            self.assertEqual(mismatches[0]["actual_params"], 3)
+
+    def test_correct_noargs_no_finding(self):
+        """Correct METH_NOARGS function with 2 params should not produce finding."""
+        with TempExtension({"ext.c": METHOD_SIG_MISMATCH}) as root:
+            result = type_slots.analyze(str(root / "ext.c"))
+            mismatches = [f for f in result["findings"]
+                          if f["type"] == "method_signature_mismatch"
+                          and f["method_name"] == "correct"]
+            self.assertEqual(len(mismatches), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
