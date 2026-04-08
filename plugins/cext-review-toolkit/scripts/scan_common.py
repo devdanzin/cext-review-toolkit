@@ -122,6 +122,83 @@ def find_assigned_variable(call_node, source_bytes: bytes) -> str | None:
     return None
 
 
+def deduplicate_findings(findings: list[dict]) -> list[dict]:
+    """Deduplicate findings by (type, file, normalized detail).
+
+    Groups findings that have the same type and file with similar
+    detail text (after stripping line numbers and variable names).
+    Keeps the first occurrence as canonical and adds duplicate_count
+    and duplicate_locations fields.
+    """
+    import re as _re
+
+    def _normalize_detail(detail: str) -> str:
+        """Strip line numbers and variable names for grouping."""
+        text = _re.sub(r"line \d+", "line N", detail)
+        text = _re.sub(r"'[^']+?'", "'VAR'", text)
+        return text
+
+    groups: dict[tuple[str, str, str], list[dict]] = {}
+    for f in findings:
+        key = (f.get("type", ""), f.get("file", ""), _normalize_detail(f.get("detail", "")))
+        groups.setdefault(key, []).append(f)
+
+    result = []
+    for group in groups.values():
+        canonical = group[0]
+        if len(group) > 1:
+            canonical["duplicate_count"] = len(group) - 1
+            canonical["duplicate_locations"] = [
+                {"file": d.get("file", ""), "line": d.get("line", 0)}
+                for d in group[1:]
+            ]
+        result.append(canonical)
+    return result
+
+
+def extract_nearby_comments(
+    source_bytes: bytes, tree, line: int, radius: int = 5
+) -> list[str]:
+    """Extract comments within ±radius lines of the given line.
+
+    Uses Tree-sitter to find comment nodes. Returns list of comment
+    text strings (stripped of comment markers).
+    """
+    comments = []
+    min_line = max(0, line - radius - 1)  # 0-indexed
+    max_line = line + radius - 1
+
+    def _walk(node):
+        if node.type == "comment":
+            node_line = node.start_point[0]
+            if min_line <= node_line <= max_line:
+                text = source_bytes[node.start_byte:node.end_byte].decode(
+                    "utf-8", errors="replace"
+                )
+                comments.append(text)
+        for child in node.children:
+            _walk(child)
+
+    _walk(tree.root_node)
+    return comments
+
+
+_SAFETY_KEYWORDS = {
+    "safety:", "safe because", "intentional", "by design",
+    "cext-safe:", "nolint", "checked:", "correct because",
+    "this is safe", "not a bug", "deliberately", "expected",
+}
+
+
+def has_safety_annotation(comments: list[str]) -> bool:
+    """Check if any comment contains a safety annotation keyword."""
+    for comment in comments:
+        lower = comment.lower()
+        if any(kw in lower for kw in _SAFETY_KEYWORDS):
+            return True
+    return False
+
+
 def parse_common_args(argv: list[str]) -> tuple[str, int]:
     """Parse common CLI arguments (path and --max-files).
 

@@ -356,6 +356,81 @@ def _check_stolen_ref_misuse(func, source_bytes, api_tables):
     return findings
 
 
+def _check_stolen_ref_double_free(func, source_bytes, api_tables):
+    """Check for Py_DECREF on error path after PyList/PyTuple_SetItem.
+
+    PyList_SetItem and PyTuple_SetItem ALWAYS steal the reference,
+    even on failure. Decrefing the stolen variable on the error path
+    is a double-free.
+    """
+    findings = []
+    body = func["body_node"]
+
+    # Only check SetItem APIs that always steal (not PyModule_AddObject
+    # which steals on success only).
+    always_steal_apis = {"PyList_SetItem", "PyTuple_SetItem"}
+
+    all_calls = find_calls_in_scope(body, source_bytes)
+    all_calls.sort(key=lambda c: c["start_byte"])
+
+    for call in all_calls:
+        if call["function_name"] not in always_steal_apis:
+            continue
+
+        args = [a.strip() for a in call["arguments_text"].split(",")]
+        if len(args) < 3:
+            continue
+        stolen_var = re.sub(r"\([^)]+\)\s*", "", args[-1]).strip()
+        if not re.match(r"^\w+$", stolen_var):
+            continue
+
+        # Look for an error check on the SetItem return: if (... < 0) or if (... == -1)
+        # Check the parent node for an if-statement containing the call
+        node = call["node"]
+        parent = node.parent
+        while parent and parent.type not in ("if_statement", "function_definition"):
+            parent = parent.parent
+
+        if parent is None or parent.type != "if_statement":
+            continue
+
+        # Check if the if-body (the error path) contains Py_DECREF/Py_XDECREF
+        # of the stolen variable
+        if_body = None
+        for child in parent.children:
+            if child.type == "compound_statement":
+                if_body = child
+                break
+
+        if if_body is None:
+            continue
+
+        body_text = get_node_text(if_body, source_bytes)
+        for decref_api in ("Py_DECREF", "Py_XDECREF"):
+            pattern = rf"\b{decref_api}\s*\(\s*{re.escape(stolen_var)}\s*\)"
+            if re.search(pattern, body_text):
+                findings.append(
+                    {
+                        "type": "stolen_ref_double_free",
+                        "file": "",
+                        "function": func["name"],
+                        "line": call["start_line"],
+                        "confidence": "high",
+                        "detail": (
+                            f"{call['function_name']}() at line {call['start_line']} "
+                            f"always steals '{stolen_var}', but error path DECREFs it "
+                            f"(double-free)"
+                        ),
+                        "steal_api": call["function_name"],
+                        "variable": stolen_var,
+                        "steal_line": call["start_line"],
+                    }
+                )
+                break
+
+    return findings
+
+
 def analyze(target: str, *, max_files: int = 0) -> dict:
     """Scan C files for reference counting errors."""
     target_path = Path(target).resolve()
@@ -393,6 +468,7 @@ def analyze(target: str, *, max_files: int = 0) -> dict:
                 _check_leak_on_error,
                 _check_borrowed_ref_across_call,
                 _check_stolen_ref_misuse,
+                _check_stolen_ref_double_free,
             ):
                 for f in checker(func, source_bytes, api_tables):
                     f["file"] = rel

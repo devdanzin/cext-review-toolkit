@@ -12,7 +12,7 @@ REMOVED_API = """\
 static PyObject *
 call_removed(PyObject *self, PyObject *args)
 {
-    return PyObject_CallObject(self, NULL);
+    return PyCFunction_Call(self, args, NULL);
 }
 """
 
