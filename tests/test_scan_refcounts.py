@@ -150,6 +150,81 @@ macro_wrapped(PyObject *self, PyObject *args)
 """
 
 
+SETITEM_DOUBLE_FREE = """\
+#include <Python.h>
+
+static PyObject *
+setitem_double_free(PyObject *self, PyObject *args)
+{
+    PyObject *list = PyList_New(1);
+    if (list == NULL)
+        return NULL;
+
+    PyObject *item = PyLong_FromLong(42);
+    if (item == NULL) {
+        Py_DECREF(list);
+        return NULL;
+    }
+
+    if (PyList_SetItem(list, 0, item) < 0) {
+        Py_DECREF(item);  /* BUG: double-free -- SetItem always steals */
+        Py_DECREF(list);
+        return NULL;
+    }
+    return list;
+}
+"""
+
+SETITEM_CORRECT = """\
+#include <Python.h>
+
+static PyObject *
+setitem_correct(PyObject *self, PyObject *args)
+{
+    PyObject *list = PyList_New(1);
+    if (list == NULL)
+        return NULL;
+
+    PyObject *item = PyLong_FromLong(42);
+    if (item == NULL) {
+        Py_DECREF(list);
+        return NULL;
+    }
+
+    if (PyList_SetItem(list, 0, item) < 0) {
+        /* item was already stolen -- don't DECREF it */
+        Py_DECREF(list);
+        return NULL;
+    }
+    return list;
+}
+"""
+
+
+class TestStolenRefDoubleFree(unittest.TestCase):
+    """Test detection of Py_DECREF after PyList/PyTuple_SetItem (double-free)."""
+
+    def test_detects_setitem_double_free(self):
+        """Detect Py_DECREF on error path after PyList_SetItem."""
+        with TempExtension({"df.c": SETITEM_DOUBLE_FREE}) as root:
+            result = refcounts.analyze(str(root / "df.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("stolen_ref_double_free", types)
+            finding = [f for f in result["findings"]
+                       if f["type"] == "stolen_ref_double_free"][0]
+            self.assertEqual(finding["confidence"], "high")
+            self.assertEqual(finding["variable"], "item")
+            self.assertEqual(finding["steal_api"], "PyList_SetItem")
+
+    def test_correct_setitem_no_finding(self):
+        """Correct SetItem usage (no DECREF on error) should not produce finding."""
+        with TempExtension({"ok.c": SETITEM_CORRECT}) as root:
+            result = refcounts.analyze(str(root / "ok.c"))
+            double_frees = [f for f in result["findings"]
+                            if f["type"] == "stolen_ref_double_free"]
+            self.assertEqual(len(double_frees), 0)
+
+
 class TestMacroWrapped(unittest.TestCase):
     """Test handling of macro-wrapped variable names."""
 
