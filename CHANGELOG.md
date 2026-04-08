@@ -4,18 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.2.0] - 2026-04-08
+
+### Added
+- **New scanner: `scan_format_strings.py`** — validates format string argument counts for `PyArg_ParseTuple`, `Py_BuildValue`, `PyErr_Format`, `PyUnicode_FromFormat`. Parses both PyArg format codes and printf-style format codes. (#27)
+- **New finding type: `stolen_ref_double_free`** in `scan_refcounts.py` — detects `Py_DECREF` on error path after `PyList_SetItem`/`PyTuple_SetItem` (which always steal, even on failure). Found 62 instances across 9 extensions in prevalence scan. Da Woods (Cython) identified this bug class. (#36)
+- **New finding type: `method_signature_mismatch`** in `scan_type_slots.py` — validates `PyMethodDef` function signatures match `METH_*` flags (METH_NOARGS→2 params, METH_O→2, METH_VARARGS→2, METH_KEYWORDS→3, METH_FASTCALL→3/4). (#29)
+- **New finding type: `object_invalidation_across_gil_release`** in `scan_gil_usage.py` — detects `self->member` use after `Py_END_ALLOW_THREADS` when the same member was accessed before GIL release. Roger Binns (APSW) identified this bug class. (#32)
+- **Finding deduplication**: `deduplicate_findings()` utility in `scan_common.py` — groups findings by (type, file, normalized detail), keeps first as canonical with `duplicate_count` field. (#28)
+- **Nearby comment checking**: `extract_nearby_comments()` and `has_safety_annotation()` in `scan_common.py` — recognizes `SAFETY:`, `cext-safe:`, `NOLINT`, `intentional`, `by design` annotations near flagged code to reduce false positives. (#30)
+- **Code removal opportunities**: new `code_removal_opportunities` section in `deprecated_apis.json` with `PyModule_AddType` (3.10+), `PyImport_ImportModuleAttrString` (3.14+, Roger Binns suggestion), `PyDict_GetItemRef` (3.13+), `PyObject_HasAttrStringWithError` (3.13+). Version-compat agent updated to suggest code removal, not just replacement. (#34)
+- **Multi-run support**: `explore` command now accepts `--runs N` and `--informed-reruns` options for the 2-naive + 1-informed methodology that found 33% more bugs on simplejson. (#31)
+- **Global finding numbering**: `explore` command synthesis template now numbers all findings sequentially (FIX 1-N, CONSIDER N+1-M, POLICY M+1-P) with action plan referencing by global number. Roger Binns (APSW) requested this. (#33)
 
 ### Fixed
-- `scan_type_slots.py`: Types inheriting from built-in types (e.g., `PyTuple_Type`) no longer flagged for missing `tp_dealloc` — the base type provides it via inheritance. Based on guppy3 maintainer feedback (Finding 26 false positive).
-- `scan_refcounts.py`: Borrowed refs from immutable containers (`PyTuple_GetItem`, `PyTuple_GET_ITEM`) no longer flagged as `borrowed_ref_across_call` — tuples hold strong refs and can't be mutated. Based on guppy3 maintainer feedback (Finding 16 false positive).
-- `scan_null_checks.py`: Added null-safe API set (`PyObject_InitVar`, `Py_XDECREF`, `PyMem_Free`, etc.) — calls to these APIs are no longer flagged as unchecked dereferences. Based on guppy3 maintainer feedback (Finding 3 false positive).
+- `deprecated_apis.json`: Fixed `PyUnicode_READY` (not actually removed — still exists as no-op in 3.14+), `PyEval_InitThreads` (Py_DEPRECATED marker is 3.9 not 3.7), `PyModule_AddObject` (soft deprecation only, no header marker). `PyObject_CallObject` was already fixed earlier (not deprecated, stable ABI). (#37)
+- `test_scan_version_compat.py`: Updated test fixture to use `PyCFunction_Call` (actually removed in 3.13) instead of `PyObject_CallObject`.
+- `scan_type_slots.py`: Types inheriting from built-in types (e.g., `PyTuple_Type`) no longer flagged for missing `tp_dealloc` — the base type provides it via inheritance. Based on guppy3 maintainer feedback.
+- `scan_refcounts.py`: Borrowed refs from immutable containers (`PyTuple_GetItem`, `PyTuple_GET_ITEM`) no longer flagged as `borrowed_ref_across_call` — tuples hold strong refs and can't be mutated. Based on guppy3 maintainer feedback.
+- `scan_null_checks.py`: Added null-safe API set (`PyObject_InitVar`, `Py_XDECREF`, `PyMem_Free`, etc.) — calls to these APIs are no longer flagged as unchecked dereferences. Based on guppy3 maintainer feedback.
 
 ### Enhanced
 - `refcount-auditor` agent: Added guideline on immutable container borrowed-ref safety.
 - `error-path-analyzer` agent: Added guidelines for sentinel/vtable error propagation and defensive visitor/callback patterns.
 - `pyerr-clear-auditor` agent: Added guideline for intentional fallback patterns (optional import + fallback).
-- `version-compat-scanner` agent: Added guideline to verify deprecation claims against documentation.
+- `version-compat-scanner` agent: Added guideline to verify deprecation claims against documentation. Added guideline 9: suggest code removal, not just replacement.
 
 ### Documentation
 - `docs/reproducer-techniques.md`: Added Technique 5b (file-like objects with malicious methods), Technique 20 (str subclass in `sys.modules` for `PyDict_GetItem` error injection), and Technique 21 (mischievous file-like objects for I/O code). Confirmed on msgspec, astropy, and awkward-cpp.
