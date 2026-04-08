@@ -5,14 +5,14 @@
       "deprecated_since": "3.10",
       "removed_in": null,
       "replacement": "PyModule_AddObjectRef",
-      "note": "Steals reference on success only (pre-3.10). AddObjectRef does not steal."
+      "note": "Soft deprecation only — no Py_DEPRECATED() marker in headers. Docs recommend PyModule_AddObjectRef (3.10+). Steals reference on success only."
     },
     {
       "name": "PyUnicode_READY",
       "deprecated_since": "3.12",
-      "removed_in": "3.14",
+      "removed_in": null,
       "replacement": null,
-      "note": "No-op since 3.12, macro removed in 3.14."
+      "note": "No-op since 3.12. Still present as inline no-op in cpython/unicodeobject.h through 3.14+. Not actually removed."
     },
     {
       "name": "Py_UNICODE",
@@ -51,10 +51,10 @@
     },
     {
       "name": "PyEval_InitThreads",
-      "deprecated_since": "3.7",
+      "deprecated_since": "3.9",
       "removed_in": null,
       "replacement": null,
-      "note": "No-op since 3.7. Can be removed."
+      "note": "No-op since 3.7. Py_DEPRECATED(3.9) marker added in 3.9. Can be removed."
     },
     {
       "name": "PyCFunction_Call",
@@ -107,10 +107,10 @@
     },
     {
       "name": "PyObject_CallObject",
-      "deprecated_since": "3.9",
-      "removed_in": "3.15",
+      "deprecated_since": null,
+      "removed_in": null,
       "replacement": "PyObject_CallNoArgs (no args) or PyObject_Call",
-      "note": "Use PyObject_CallNoArgs for zero-arg calls, PyObject_Call for general case."
+      "note": "NOT deprecated. Part of stable ABI since 3.2. PyObject_CallNoArgs or PyObject_Call are preferred for new code but CallObject is valid. Do NOT flag as deprecated."
     },
     {
       "name": "PyEval_CallObject",
@@ -129,6 +129,7 @@
   ],
   "version_added": {
     "PyModule_AddObjectRef": "3.10",
+    "PyModule_AddType": "3.10",
     "PyType_FromModuleAndSpec": "3.10",
     "Py_NewRef": "3.10",
     "Py_XNewRef": "3.10",
@@ -137,6 +138,39 @@
     "PyType_GetModuleByDef": "3.11",
     "PyErr_GetRaisedException": "3.12",
     "PyDict_GetItemRef": "3.13",
-    "Py_IsFinalizing": "3.13"
-  }
+    "PyDict_GetItemStringRef": "3.13",
+    "Py_IsFinalizing": "3.13",
+    "PyImport_ImportModuleAttrString": "3.14",
+    "PyObject_HasAttrStringWithError": "3.13"
+  },
+  "code_removal_opportunities": [
+    {
+      "name": "PyModule_AddType",
+      "added": "3.10",
+      "replaces_pattern": "PyType_FromSpec + PyType_Ready + Py_INCREF + PyModule_AddObject",
+      "lines_saved_estimate": "4-8 per type",
+      "note": "Single call replaces the entire type registration boilerplate. See https://docs.python.org/3/c-api/module.html#c.PyModule_AddType"
+    },
+    {
+      "name": "PyImport_ImportModuleAttrString",
+      "added": "3.14",
+      "replaces_pattern": "PyImport_ImportModule + PyObject_GetAttrString + Py_DECREF(module)",
+      "lines_saved_estimate": "5-8 per import+getattr",
+      "note": "Single call replaces import-then-getattr pattern. Suggestion from APSW maintainer Roger Binns."
+    },
+    {
+      "name": "PyDict_GetItemRef",
+      "added": "3.13",
+      "replaces_pattern": "PyDict_GetItemWithError + if NULL + PyErr_Occurred + Py_INCREF",
+      "lines_saved_estimate": "3-5 per lookup",
+      "note": "Returns strong reference directly, eliminates borrowed-ref window. Also available via pythoncapi-compat."
+    },
+    {
+      "name": "PyObject_HasAttrStringWithError",
+      "added": "3.13",
+      "replaces_pattern": "PyObject_HasAttrString (which silently swallows exceptions)",
+      "lines_saved_estimate": "0 (same line count, but fixes exception swallowing)",
+      "note": "Error-reporting variant. Available via pythoncapi-compat."
+    }
+  ]
 }

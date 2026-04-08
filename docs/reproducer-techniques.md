@@ -629,3 +629,59 @@ Pattern 2 is the most powerful for C++ extensions: the first successful read sta
 | 19. Stateful metaclass hash | PyDict_GetItem swallows errors on type-keyed lookups | Metaclass | Medium |
 | 20. str subclass in sys.modules | PyDict_GetItem error injection + compound NULL bugs | str subclass | Hard |
 | 21. Mischievous file-like objects | I/O error handling, mid-parse exception swallowing | Custom class | Easy |
+
+---
+
+## Technique 22: Callback that modifies caller's internal state
+
+**Triggers**: Double-free, use-after-free, refcount underflow, or data corruption when a C extension calls a user-provided Python callback that modifies the extension's own data structures (markers dicts, caches, internal containers) during the call.
+
+**Bug class**: C code assumes its internal state is unchanged across a callback invocation. When the callback modifies that state (clears a dict, removes an item, replaces a reference), the C code's post-callback cleanup operates on stale or missing data.
+
+**How it works**: Many C extensions pass user-provided callbacks (default handlers, key functions, comparison functions, visitor functions) while holding references to internal data structures. If the callback has access to those data structures (directly or via the encoder/decoder object), it can mutate them mid-operation.
+
+```python
+import simplejson._speedups as sp
+import decimal
+
+markers = {}
+
+class Evil:
+    pass
+
+call_count = [0]
+
+def bad_default(obj):
+    call_count[0] += 1
+    if call_count[0] <= 1:
+        markers.clear()  # Remove ident from markers mid-encoding!
+        return "safe"
+    return str(obj)
+
+c_enc = sp.make_encoder(
+    markers, bad_default, sp.encode_basestring_ascii, None, ", ", ": ",
+    False, False, True, None, False, False, False, None,
+    None, "utf-8", False, False, decimal.Decimal, False,
+)
+
+c_enc(Evil(), 0)
+# Segmentation fault — double Py_XDECREF on ident after
+# PyDict_DelItem fails because markers was cleared
+```
+
+**Why it works**: The simplejson C encoder stores `ident = PyLong_FromVoidPtr(obj)` in the `markers` dict before calling `default(obj)`. After the callback returns, it tries to remove `ident` from `markers`. If the callback cleared the dict, `PyDict_DelItem` fails, triggering an error path that XDECREF's `ident` — but the unconditional XDECREF after the `if` block decrements it again, causing a use-after-free.
+
+**Variations**:
+- Callback that **removes a specific key** from a cache dict (more surgical than `clear()`)
+- Callback that **replaces the dict** entirely (if the extension re-reads the reference)
+- Callback that **triggers GC** which collects the container (via `gc.collect()` or circular reference creation)
+- Callback that **raises an exception** after modifying state (combines state corruption with error-path bugs)
+- `__del__` destructor that modifies shared state when an object's refcount hits zero during the callback
+
+**What to look for in code review**: Any pattern where C code:
+1. Acquires a reference or inserts into a container
+2. Calls a user-provided Python callback
+3. Assumes the container/reference is unchanged after the callback returns
+4. Performs cleanup (DECREF, dict removal) based on that assumption
+
+First confirmed on: simplejson `encoder_listencode_obj` double-XDECREF on `ident` (Finding 14).
