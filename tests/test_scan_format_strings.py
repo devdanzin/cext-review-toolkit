@@ -68,8 +68,9 @@ class TestScanFormatStrings(unittest.TestCase):
             result = fmt.analyze(str(root / "ext.c"))
             types = [f["type"] for f in result["findings"]]
             self.assertIn("format_string_mismatch", types)
-            finding = [f for f in result["findings"]
-                       if f["type"] == "format_string_mismatch"][0]
+            finding = [
+                f for f in result["findings"] if f["type"] == "format_string_mismatch"
+            ][0]
             self.assertEqual(finding["api_call"], "PyArg_ParseTuple")
             self.assertEqual(finding["expected_args"], 2)
             self.assertEqual(finding["actual_args"], 1)
@@ -78,8 +79,9 @@ class TestScanFormatStrings(unittest.TestCase):
         """Correct PyArg_ParseTuple should not produce finding."""
         with TempExtension({"ext.c": CORRECT_PYARG}) as root:
             result = fmt.analyze(str(root / "ext.c"))
-            mismatches = [f for f in result["findings"]
-                          if f["type"] == "format_string_mismatch"]
+            mismatches = [
+                f for f in result["findings"] if f["type"] == "format_string_mismatch"
+            ]
             self.assertEqual(len(mismatches), 0)
 
     def test_detects_build_value_mismatch(self):
@@ -105,6 +107,66 @@ class TestScanFormatStrings(unittest.TestCase):
             self.assertIn("functions_analyzed", result)
             self.assertIn("findings", result)
             self.assertIn("summary", result)
+
+
+class TestCountPyargFormatArgs(unittest.TestCase):
+    """Unit tests for _count_pyarg_format_args format parser."""
+
+    def _count(self, fmt_str):
+        return fmt._count_pyarg_format_args(fmt_str)
+
+    def test_simple_formats(self):
+        self.assertEqual(self._count("i"), 1)
+        self.assertEqual(self._count("id"), 2)
+        self.assertEqual(self._count("ids"), 3)
+
+    def test_O_bang(self):
+        """O! consumes 2 args (type + object)."""
+        self.assertEqual(self._count("O!si"), 4)
+
+    def test_O_ampersand(self):
+        """O& consumes 2 args (converter + void*)."""
+        self.assertEqual(self._count("O&i"), 3)
+
+    def test_es_hash(self):
+        """es# consumes 3 args (encoding + buffer + length)."""
+        self.assertEqual(self._count("es#"), 3)
+
+    def test_et_hash(self):
+        """et# consumes 3 args."""
+        self.assertEqual(self._count("et#"), 3)
+
+    def test_optional_separator(self):
+        """| marks optional args but doesn't change count."""
+        self.assertEqual(self._count("s|ii"), 3)
+
+    def test_colon_stops(self):
+        """: marks function name — stop counting."""
+        self.assertEqual(self._count("s:funcname"), 1)
+
+    def test_semicolon_stops(self):
+        """; marks error message — stop counting."""
+        self.assertEqual(self._count("si;bad args"), 2)
+
+    def test_star_buffer(self):
+        """y* and similar consume 1 arg (Py_buffer)."""
+        self.assertEqual(self._count("y*"), 1)
+
+    def test_hash_modifier(self):
+        """s# consumes 2 args (char* + length)."""
+        self.assertEqual(self._count("s#"), 2)
+
+    def test_empty_format(self):
+        self.assertEqual(self._count(""), 0)
+
+    def test_parenthesized_tuple(self):
+        """(ii) is a single tuple arg with 2 elements -> 2 addresses."""
+        self.assertEqual(self._count("(ii)"), 2)
+
+    def test_complex_format(self):
+        """Complex real-world format string."""
+        # "s(ffff)" = string + tuple of 4 floats = 5 addresses
+        self.assertEqual(self._count("s(ffff)"), 5)
 
 
 if __name__ == "__main__":

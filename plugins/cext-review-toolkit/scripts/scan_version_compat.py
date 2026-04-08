@@ -17,7 +17,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tree_sitter_utils import (
     parse_bytes_for_file, extract_functions, find_calls_in_scope,
-    get_node_text, strip_comments,
 )
 from scan_common import find_project_root, discover_c_files
 

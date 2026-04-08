@@ -26,6 +26,7 @@ from scan_common import (
     discover_c_files,
     load_api_tables,
     find_assigned_variable,
+    is_suppressed_by_comment,
     PYARG_PARSE_APIS,
     parse_common_args,
 )
@@ -378,10 +379,12 @@ def analyze(target: str, *, max_files: int = 0) -> dict:
             ):
                 for f in checker(func, source_bytes, api_tables):
                     f["file"] = rel
+                    if is_suppressed_by_comment(source_bytes, tree, f.get("line", 0)):
+                        f["suppressed"] = True
                     findings.append(f)
 
-    by_type = defaultdict(int)
-    by_confidence = defaultdict(int)
+    by_type: dict[str, int] = defaultdict(int)
+    by_confidence: dict[str, int] = defaultdict(int)
     for f in findings:
         by_type[f["type"]] += 1
         by_confidence[f["confidence"]] += 1

@@ -645,14 +645,64 @@ def _check_type_spec_sentinel(tree, source_bytes: bytes):
 
 # Expected parameter counts for each METH_* flag combination.
 _METH_PARAM_COUNTS = {
-    "METH_NOARGS": 2,       # (self, Py_UNUSED(ignored)) — CPython passes NULL
-    "METH_O": 2,            # (self, arg)
-    "METH_VARARGS": 2,      # (self, args)
-    "METH_KEYWORDS": 3,     # (self, args, kwargs) — with METH_VARARGS
-    "METH_FASTCALL": 3,     # (self, args, nargs)
+    "METH_NOARGS": 2,  # (self, Py_UNUSED(ignored)) — CPython passes NULL
+    "METH_O": 2,  # (self, arg)
+    "METH_VARARGS": 2,  # (self, args)
+    "METH_KEYWORDS": 3,  # (self, args, kwargs) — with METH_VARARGS
+    "METH_FASTCALL": 3,  # (self, args, nargs)
     "METH_FASTCALL_KW": 4,  # (self, args, nargs, kwnames)
-    "METH_METHOD": 4,       # (defining_class, self, args, nargs) — min, +1 for kwnames
+    "METH_METHOD": 4,  # (defining_class, self, args, nargs) — min, +1 for kwnames
 }
+
+
+def _count_c_params(params_str: str) -> int:
+    """Count parameters in a C function parameter string.
+
+    Handles nested parentheses and angle brackets (function pointers,
+    templates) by tracking depth so commas inside them are not counted.
+    """
+    if not params_str or params_str.strip() == "void":
+        return 0
+    depth = 0
+    count = 1
+    for ch in params_str:
+        if ch in "(<":
+            depth += 1
+        elif ch in ")>":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            count += 1
+    return count
+
+
+def _resolve_slots(
+    slot_arrays: list[dict],
+    slots_name: str,
+    source_bytes: bytes,
+) -> dict[str, str | None]:
+    """Resolve PyType_Slot array entries into a dict of slot_type -> func_name."""
+    result: dict[str, str | None] = {
+        "dealloc": None,
+        "traverse": None,
+        "richcompare": None,
+        "init": None,
+        "new": None,
+    }
+    slot_type_to_key = {
+        "Py_tp_dealloc": "dealloc",
+        "Py_tp_traverse": "traverse",
+        "Py_tp_richcompare": "richcompare",
+        "Py_tp_init": "init",
+        "Py_tp_new": "new",
+    }
+    for sa in slot_arrays:
+        if sa["variable_name"] == slots_name:
+            slots = _parse_type_slots_array(sa["initializer_text"])
+            for slot_type, slot_func in slots:
+                key = slot_type_to_key.get(slot_type)
+                if key:
+                    result[key] = slot_func
+    return result
 
 
 def _check_method_signatures(tree, source_bytes: bytes, functions: list[dict]):
@@ -671,10 +721,10 @@ def _check_method_signatures(tree, source_bytes: bytes, functions: list[dict]):
         # Parse entries: {name, func, flags, doc}
         # Each entry is between { and }
         entries = re.findall(
-            r"\{\s*\"([^\"]+)\"\s*,\s*"         # name string
-            r"(?:\([^)]*\)\s*)?(\w+)\s*,\s*"    # func (possibly cast)
-            r"([^,}]+?)\s*,"                     # flags
-            r"[^}]*\}",                          # doc + close
+            r"\{\s*\"([^\"]+)\"\s*,\s*"  # name string
+            r"(?:\([^)]*\)\s*)?(\w+)\s*,\s*"  # func (possibly cast)
+            r"([^,}]+?)\s*,"  # flags
+            r"[^}]*\}",  # doc + close
             init_text,
         )
 
@@ -706,22 +756,7 @@ def _check_method_signatures(tree, source_bytes: bytes, functions: list[dict]):
             if func is None:
                 continue
 
-            # Count parameters
-            params_str = func["parameters"]
-            if not params_str or params_str.strip() == "void":
-                actual = 0
-            else:
-                # Split by comma, but be careful with function pointer params
-                depth = 0
-                count = 1
-                for ch in params_str:
-                    if ch in "(<":
-                        depth += 1
-                    elif ch in ")>":
-                        depth -= 1
-                    elif ch == "," and depth == 0:
-                        count += 1
-                actual = count
+            actual = _count_c_params(func["parameters"])
 
             if actual != expected:
                 flags_desc = flags_str.replace("|", " | ").strip()
@@ -780,38 +815,23 @@ def _extract_type_infos(tree, source_bytes: bytes, functions: list[dict]) -> lis
         fields = _parse_type_fields(si["initializer_text"])
         flags_text = fields.get("flags", "")
 
-        # Find the slots array name.
+        # Find the slots array name and resolve slot functions.
         slots_name = fields.get("slots", "").strip()
         if slots_name:
-            # Look up the actual slots.
             slot_arrays = extract_struct_initializers(tree, source_bytes, "PyType_Slot")
-            dealloc = traverse = richcompare = init = new = None
-            for sa in slot_arrays:
-                if sa["variable_name"] == slots_name:
-                    slots = _parse_type_slots_array(sa["initializer_text"])
-                    for slot_type, slot_func in slots:
-                        if slot_type == "Py_tp_dealloc":
-                            dealloc = slot_func
-                        elif slot_type == "Py_tp_traverse":
-                            traverse = slot_func
-                        elif slot_type == "Py_tp_richcompare":
-                            richcompare = slot_func
-                        elif slot_type == "Py_tp_init":
-                            init = slot_func
-                        elif slot_type == "Py_tp_new":
-                            new = slot_func
+            resolved = _resolve_slots(slot_arrays, slots_name, source_bytes)
 
             info = {
                 "name": si["variable_name"],
                 "line": si["start_line"],
-                "dealloc_func": dealloc,
-                "traverse_func": traverse,
-                "richcompare_func": richcompare,
-                "init_func": init,
-                "new_func": new,
+                "dealloc_func": resolved["dealloc"],
+                "traverse_func": resolved["traverse"],
+                "richcompare_func": resolved["richcompare"],
+                "init_func": resolved["init"],
+                "new_func": resolved["new"],
                 "struct_name": _get_struct_name_from_type(fields, source_text),
                 "has_gc": "Py_TPFLAGS_HAVE_GC" in flags_text,
-                "is_heap_type": True,  # PyType_Spec always creates heap types.
+                "is_heap_type": True,
                 "is_static": False,
             }
             type_infos.append(info)

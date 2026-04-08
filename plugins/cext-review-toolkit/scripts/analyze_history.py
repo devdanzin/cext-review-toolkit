@@ -30,21 +30,79 @@ from tree_sitter_utils import parse_bytes_for_file, extract_functions
 from scan_common import find_project_root
 
 CLASSIFICATION_RULES: list[tuple[str, list[str]]] = [
-    ("fix", ["fix", "bug", "patch", "resolve", "issue", "crash",
-             "error", "broken", "repair", "correct", "regression",
-             "workaround", "hotfix", "segfault", "leak", "null",
-             "refcount", "decref"]),
-    ("docs", ["doc", "readme", "comment", "typo", "spelling",
-              "changelog", "documentation"]),
+    (
+        "fix",
+        [
+            "fix",
+            "bug",
+            "patch",
+            "resolve",
+            "issue",
+            "crash",
+            "error",
+            "broken",
+            "repair",
+            "correct",
+            "regression",
+            "workaround",
+            "hotfix",
+            "segfault",
+            "leak",
+            "null",
+            "refcount",
+            "decref",
+        ],
+    ),
+    (
+        "docs",
+        ["doc", "readme", "comment", "typo", "spelling", "changelog", "documentation"],
+    ),
     ("test", ["test", "coverage", "assert", "mock", "fixture"]),
-    ("refactor", ["refactor", "clean", "simplify", "reorganize",
-                  "restructure", "rename", "move", "extract",
-                  "deduplicate", "inline"]),
-    ("chore", ["bump", "dependency", "update", "upgrade", "ci",
-               "config", "lint", "format", "version", "release",
-               "merge", "revert"]),
-    ("feature", ["add", "implement", "new", "feature", "introduce",
-                 "support", "enable", "create"]),
+    (
+        "refactor",
+        [
+            "refactor",
+            "clean",
+            "simplify",
+            "reorganize",
+            "restructure",
+            "rename",
+            "move",
+            "extract",
+            "deduplicate",
+            "inline",
+        ],
+    ),
+    (
+        "chore",
+        [
+            "bump",
+            "dependency",
+            "update",
+            "upgrade",
+            "ci",
+            "config",
+            "lint",
+            "format",
+            "version",
+            "release",
+            "merge",
+            "revert",
+        ],
+    ),
+    (
+        "feature",
+        [
+            "add",
+            "implement",
+            "new",
+            "feature",
+            "introduce",
+            "support",
+            "enable",
+            "create",
+        ],
+    ),
 ]
 
 _GIT_TIMEOUT = 30
@@ -65,15 +123,21 @@ def classify_commit(message: str) -> str:
 
 def _run_git(args, cwd, timeout=_GIT_TIMEOUT):
     return subprocess.run(
-        ["git"] + args, capture_output=True, text=True,
-        cwd=str(cwd), timeout=timeout,
+        ["git"] + args,
+        capture_output=True,
+        text=True,
+        cwd=str(cwd),
+        timeout=timeout,
     )
 
 
 def _run_git_streaming(args, cwd):
     return subprocess.Popen(
-        ["git"] + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, cwd=str(cwd),
+        ["git"] + args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=str(cwd),
     )
 
 
@@ -116,10 +180,13 @@ def parse_git_log(lines, max_commits, project_root=None):
                 continue
             commit_hash, date_str, author, message = parts
             current_commit = {
-                "hash": commit_hash, "date": date_str,
-                "author": author, "message": message,
+                "hash": commit_hash,
+                "date": date_str,
+                "author": author,
+                "message": message,
                 "type": classify_commit(message),
-                "files": [], "stats": [],
+                "files": [],
+                "stats": [],
             }
         elif line.strip() and current_commit is not None:
             parts = line.split("\t", 2)
@@ -131,13 +198,20 @@ def parse_git_log(lines, max_commits, project_root=None):
                 except ValueError:
                     continue
                 current_commit["files"].append(filepath)
-                current_commit["stats"].append({
-                    "file": filepath, "added": added, "removed": removed,
-                })
+                current_commit["stats"].append(
+                    {
+                        "file": filepath,
+                        "added": added,
+                        "removed": removed,
+                    }
+                )
                 if filepath not in file_changes:
                     file_changes[filepath] = {
-                        "commits": 0, "lines_added": 0, "lines_removed": 0,
-                        "authors": set(), "first_date": date_str,
+                        "commits": 0,
+                        "lines_added": 0,
+                        "lines_removed": 0,
+                        "authors": set(),
+                        "first_date": date_str,
                         "last_date": date_str,
                     }
                 fc = file_changes[filepath]
@@ -155,17 +229,26 @@ def parse_git_log(lines, max_commits, project_root=None):
 
     file_stats = []
     for filepath, fc in file_changes.items():
-        line_count = _get_file_line_count(project_root / filepath) if project_root else 0
-        churn_rate = (round((fc["lines_added"] + fc["lines_removed"]) / line_count, 2)
-                      if line_count > 0 else 0.0)
-        file_stats.append({
-            "file": filepath, "commits": fc["commits"],
-            "lines_added": fc["lines_added"],
-            "lines_removed": fc["lines_removed"],
-            "churn_rate": churn_rate, "authors": len(fc["authors"]),
-            "first_commit_in_range": fc["first_date"],
-            "last_modified": fc["last_date"],
-        })
+        line_count = (
+            _get_file_line_count(project_root / filepath) if project_root else 0
+        )
+        churn_rate = (
+            round((fc["lines_added"] + fc["lines_removed"]) / line_count, 2)
+            if line_count > 0
+            else 0.0
+        )
+        file_stats.append(
+            {
+                "file": filepath,
+                "commits": fc["commits"],
+                "lines_added": fc["lines_added"],
+                "lines_removed": fc["lines_removed"],
+                "churn_rate": churn_rate,
+                "authors": len(fc["authors"]),
+                "first_commit_in_range": fc["first_date"],
+                "last_modified": fc["last_date"],
+            }
+        )
 
     file_stats.sort(key=lambda x: x["commits"], reverse=True)
     return commits, file_stats
@@ -195,8 +278,11 @@ def _get_c_function_boundaries(filepath: Path) -> list[dict]:
         tree = parse_bytes_for_file(source_bytes, filepath)
         functions = extract_functions(tree, source_bytes)
         return [
-            {"name": f["name"], "line_start": f["start_line"],
-             "line_end": f["end_line"]}
+            {
+                "name": f["name"],
+                "line_start": f["start_line"],
+                "line_end": f["end_line"],
+            }
             for f in functions
         ]
     except OSError:
@@ -206,6 +292,7 @@ def _get_c_function_boundaries(filepath: Path) -> list[dict]:
 def _get_py_function_boundaries(filepath: Path) -> list[dict]:
     """Use Python AST to get Python function boundaries."""
     import ast
+
     try:
         source = filepath.read_text(encoding="utf-8", errors="replace")
         tree = ast.parse(source, filename=str(filepath))
@@ -216,11 +303,13 @@ def _get_py_function_boundaries(filepath: Path) -> list[dict]:
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             end_lineno = getattr(node, "end_lineno", node.lineno)
-            functions.append({
-                "name": node.name,
-                "line_start": node.lineno,
-                "line_end": end_lineno,
-            })
+            functions.append(
+                {
+                    "name": node.name,
+                    "line_start": node.lineno,
+                    "line_end": end_lineno,
+                }
+            )
     return functions
 
 
@@ -231,12 +320,22 @@ def compute_function_churn(commits, scan_root, project_root, max_files=0):
         all_files = [scan_root]
     else:
         all_files = sorted(
-            p for p in scan_root.rglob("*")
+            p
+            for p in scan_root.rglob("*")
             if p.is_file() and p.suffix in (".c", ".h", ".py")
         )
 
-    exclude = {".git", ".tox", ".venv", "venv", "__pycache__",
-               "node_modules", ".eggs", "build", "dist"}
+    exclude = {
+        ".git",
+        ".tox",
+        ".venv",
+        "venv",
+        "__pycache__",
+        "node_modules",
+        ".eggs",
+        "build",
+        "dist",
+    }
 
     filtered = []
     for f in all_files:
@@ -252,7 +351,10 @@ def compute_function_churn(commits, scan_root, project_root, max_files=0):
         filtered = filtered[:max_files]
 
     for f in filtered:
-        rel_path = str(f.relative_to(project_root))
+        try:
+            rel_path = str(f.relative_to(project_root))
+        except ValueError:
+            rel_path = str(f)
         boundaries = get_function_boundaries(f)
         if boundaries:
             file_functions[rel_path] = boundaries
@@ -294,12 +396,15 @@ def compute_function_churn(commits, scan_root, project_root, max_files=0):
     for (file_path, func_name), commit_hashes in func_commits.items():
         boundaries = file_functions.get(file_path, [])
         func_info = next((f for f in boundaries if f["name"] == func_name), None)
-        results.append({
-            "function": func_name, "file": file_path,
-            "line_start": func_info["line_start"] if func_info else 0,
-            "line_end": func_info["line_end"] if func_info else 0,
-            "commits": len(commit_hashes),
-        })
+        results.append(
+            {
+                "function": func_name,
+                "file": file_path,
+                "line_start": func_info["line_start"] if func_info else 0,
+                "line_end": func_info["line_end"] if func_info else 0,
+                "commits": len(commit_hashes),
+            }
+        )
 
     results.sort(key=lambda x: x["commits"], reverse=True)
     return results
@@ -331,15 +436,17 @@ def get_commit_details(commits, commit_type, project_root, scan_root, max_diff_l
 
         diff_text = _truncate_diff(diff_text, max_diff_lines)
 
-        results.append({
-            "commit": commit["hash"],
-            "commit_short": commit["hash"][:7],
-            "message": commit["message"],
-            "date": commit["date"],
-            "author": commit["author"],
-            "files": commit["files"],
-            "diff": diff_text,
-        })
+        results.append(
+            {
+                "commit": commit["hash"],
+                "commit_short": commit["hash"][:7],
+                "message": commit["message"],
+                "date": commit["date"],
+                "author": commit["author"],
+                "files": commit["files"],
+                "diff": diff_text,
+            }
+        )
     return results
 
 
@@ -358,41 +465,66 @@ def compute_co_change_clusters(commits, min_co_changes=3, max_pairs=30):
     results = []
     for (a, b), count in co_changes.items():
         if count >= min_co_changes:
-            results.append({
-                "file_a": a, "file_b": b,
-                "co_change_count": count,
-                "total_commits_a": file_commit_counts[a],
-                "total_commits_b": file_commit_counts[b],
-            })
+            results.append(
+                {
+                    "file_a": a,
+                    "file_b": b,
+                    "co_change_count": count,
+                    "total_commits_a": file_commit_counts[a],
+                    "total_commits_b": file_commit_counts[b],
+                }
+            )
     results.sort(key=lambda x: x["co_change_count"], reverse=True)
     return results[:max_pairs]
 
 
 def parse_args(argv):
     args = {
-        "path": ".", "days": 90, "since": None, "until": None,
-        "last": None, "max_commits": 2000, "max_files": 0,
+        "path": ".",
+        "days": 90,
+        "since": None,
+        "until": None,
+        "last": None,
+        "max_commits": 2000,
+        "max_files": 0,
         "no_function": False,
     }
+
+    def _parse_int(flag: str, value: str) -> int:
+        try:
+            return int(value)
+        except ValueError:
+            raise SystemExit(
+                json.dumps({"error": f"{flag} requires an integer, got '{value}'"})
+            )
+
     i = 0
     while i < len(argv):
         arg = argv[i]
         if arg == "--days" and i + 1 < len(argv):
-            args["days"] = int(argv[i + 1]); i += 2
+            args["days"] = _parse_int("--days", argv[i + 1])
+            i += 2
         elif arg == "--since" and i + 1 < len(argv):
-            args["since"] = argv[i + 1]; i += 2
+            args["since"] = argv[i + 1]
+            i += 2
         elif arg == "--until" and i + 1 < len(argv):
-            args["until"] = argv[i + 1]; i += 2
+            args["until"] = argv[i + 1]
+            i += 2
         elif arg == "--last" and i + 1 < len(argv):
-            args["last"] = int(argv[i + 1]); i += 2
+            args["last"] = _parse_int("--last", argv[i + 1])
+            i += 2
         elif arg == "--max-commits" and i + 1 < len(argv):
-            args["max_commits"] = int(argv[i + 1]); i += 2
+            args["max_commits"] = _parse_int("--max-commits", argv[i + 1])
+            i += 2
         elif arg == "--max-files" and i + 1 < len(argv):
-            args["max_files"] = int(argv[i + 1]); i += 2
+            args["max_files"] = _parse_int("--max-files", argv[i + 1])
+            i += 2
         elif arg == "--no-function":
-            args["no_function"] = True; i += 1
+            args["no_function"] = True
+            i += 1
         elif not arg.startswith("-"):
-            args["path"] = arg; i += 1
+            args["path"] = arg
+            i += 1
         else:
             i += 1
     return args
@@ -434,15 +566,17 @@ def analyze(argv=None):
     try:
         commits, file_churn = parse_git_log(proc.stdout, max_commits, project_root)
     finally:
-        proc.wait()
+        proc.terminate()
+        proc.wait(timeout=10)
 
     commit_cap_applied = len(commits) >= max_commits
     if last_n is not None and commits:
         since = commits[-1]["date"]
         until = commits[0]["date"]
         try:
-            days = max(1, (datetime.fromisoformat(until) -
-                           datetime.fromisoformat(since)).days)
+            days = max(
+                1, (datetime.fromisoformat(until) - datetime.fromisoformat(since)).days
+            )
         except ValueError:
             days = args["days"]
     else:
@@ -460,14 +594,18 @@ def analyze(argv=None):
         function_churn_note = "Function-level churn skipped"
     else:
         function_churn = compute_function_churn(
-            commits, scan_root, project_root, max_files=args["max_files"])
+            commits, scan_root, project_root, max_files=args["max_files"]
+        )
 
     recent_fixes = get_commit_details(
-        commits, "fix", project_root, scan_root, _MAX_DIFF_LINES_FIX)
+        commits, "fix", project_root, scan_root, _MAX_DIFF_LINES_FIX
+    )
     recent_features = get_commit_details(
-        commits, "feature", project_root, scan_root, _MAX_DIFF_LINES_FIX)
+        commits, "feature", project_root, scan_root, _MAX_DIFF_LINES_FIX
+    )
     recent_refactors = get_commit_details(
-        commits, "refactor", project_root, scan_root, _MAX_DIFF_LINES_REFACTOR)
+        commits, "refactor", project_root, scan_root, _MAX_DIFF_LINES_REFACTOR
+    )
 
     co_change_clusters = compute_co_change_clusters(commits)
 
@@ -475,7 +613,9 @@ def analyze(argv=None):
         "project_root": str(project_root),
         "scan_root": str(scan_root),
         "time_range": {
-            "start": since, "end": until, "days": days,
+            "start": since,
+            "end": until,
+            "days": days,
             "commit_cap_applied": commit_cap_applied,
         },
         "summary": {
