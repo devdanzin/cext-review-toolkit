@@ -14,31 +14,53 @@ try:
     import tree_sitter
     import tree_sitter_c
 except ImportError:
-    print(json.dumps({
-        "error": "tree-sitter not installed",
-        "install": "pip install tree-sitter tree-sitter-c",
-    }))
+    print(
+        json.dumps(
+            {
+                "error": "tree-sitter not installed",
+                "install": "pip install tree-sitter tree-sitter-c",
+            }
+        )
+    )
     sys.exit(1)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tree_sitter_utils import (
-    get_node_text, get_declarator_name,
-    C_EXTENSIONS, ALL_SOURCE_EXTENSIONS, is_cpp_available,
+    get_node_text,
+    get_declarator_name,
+    C_EXTENSIONS,
+    ALL_SOURCE_EXTENSIONS,
+    is_cpp_available,
 )
 
 
-EXCLUDE_DIRS = frozenset({
-    ".git", ".tox", ".venv", "venv", "__pycache__",
-    "node_modules", "build", "dist", ".eggs", "egg-info",
-})
+EXCLUDE_DIRS = frozenset(
+    {
+        ".git",
+        ".tox",
+        ".venv",
+        "venv",
+        "__pycache__",
+        "node_modules",
+        "build",
+        "dist",
+        ".eggs",
+        "egg-info",
+    }
+)
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
-PYARG_PARSE_APIS = frozenset({
-    "PyArg_ParseTuple", "PyArg_ParseTupleAndKeywords",
-    "PyArg_Parse", "PyArg_UnpackTuple",
-    "PyArg_VaParse", "PyArg_VaParseTupleAndKeywords",
-})
+PYARG_PARSE_APIS = frozenset(
+    {
+        "PyArg_ParseTuple",
+        "PyArg_ParseTupleAndKeywords",
+        "PyArg_Parse",
+        "PyArg_UnpackTuple",
+        "PyArg_VaParse",
+        "PyArg_VaParseTupleAndKeywords",
+    }
+)
 
 
 def find_project_root(start: Path) -> Path:
@@ -61,7 +83,9 @@ def _get_source_extensions() -> frozenset[str]:
 
 
 def discover_c_files(
-    root: Path, *, max_files: int = 0,
+    root: Path,
+    *,
+    max_files: int = 0,
 ) -> Generator[Path, None, None]:
     """Discover C/C++ source files under root, excluding common build dirs."""
     exts = _get_source_extensions()
@@ -115,8 +139,7 @@ def find_assigned_variable(call_node, source_bytes: bytes) -> str | None:
                 if func_text.isupper():
                     node = node.parent
                     continue
-        if node.type in ("expression_statement", "declaration",
-                          "compound_statement"):
+        if node.type in ("expression_statement", "declaration", "compound_statement"):
             break
         node = node.parent
     return None
@@ -140,7 +163,11 @@ def deduplicate_findings(findings: list[dict]) -> list[dict]:
 
     groups: dict[tuple[str, str, str], list[dict]] = {}
     for f in findings:
-        key = (f.get("type", ""), f.get("file", ""), _normalize_detail(f.get("detail", "")))
+        key = (
+            f.get("type", ""),
+            f.get("file", ""),
+            _normalize_detail(f.get("detail", "")),
+        )
         groups.setdefault(key, []).append(f)
 
     result = []
@@ -149,8 +176,7 @@ def deduplicate_findings(findings: list[dict]) -> list[dict]:
         if len(group) > 1:
             canonical["duplicate_count"] = len(group) - 1
             canonical["duplicate_locations"] = [
-                {"file": d.get("file", ""), "line": d.get("line", 0)}
-                for d in group[1:]
+                {"file": d.get("file", ""), "line": d.get("line", 0)} for d in group[1:]
             ]
         result.append(canonical)
     return result
@@ -172,7 +198,7 @@ def extract_nearby_comments(
         if node.type == "comment":
             node_line = node.start_point[0]
             if min_line <= node_line <= max_line:
-                text = source_bytes[node.start_byte:node.end_byte].decode(
+                text = source_bytes[node.start_byte : node.end_byte].decode(
                     "utf-8", errors="replace"
                 )
                 comments.append(text)
@@ -184,9 +210,18 @@ def extract_nearby_comments(
 
 
 _SAFETY_KEYWORDS = {
-    "safety:", "safe because", "intentional", "by design",
-    "cext-safe:", "nolint", "checked:", "correct because",
-    "this is safe", "not a bug", "deliberately", "expected",
+    "safety:",
+    "safe because",
+    "intentional",
+    "by design",
+    "cext-safe:",
+    "nolint",
+    "checked:",
+    "correct because",
+    "this is safe",
+    "not a bug",
+    "deliberately",
+    "expected",
 }
 
 
@@ -197,6 +232,21 @@ def has_safety_annotation(comments: list[str]) -> bool:
         if any(kw in lower for kw in _SAFETY_KEYWORDS):
             return True
     return False
+
+
+def is_suppressed_by_comment(
+    source_bytes: bytes,
+    tree,
+    line: int,
+    radius: int = 3,
+) -> bool:
+    """Check if a finding at the given line is suppressed by a nearby comment.
+
+    Combines extract_nearby_comments + has_safety_annotation into a single
+    call for use in scanner check functions.
+    """
+    comments = extract_nearby_comments(source_bytes, tree, line, radius)
+    return has_safety_annotation(comments)
 
 
 def parse_common_args(argv: list[str]) -> tuple[str, int]:
@@ -212,7 +262,13 @@ def parse_common_args(argv: list[str]) -> tuple[str, int]:
             try:
                 max_files = int(argv[i + 1])
             except ValueError:
-                print(json.dumps({"error": f"--max-files requires an integer, got '{argv[i + 1]}'"}))
+                print(
+                    json.dumps(
+                        {
+                            "error": f"--max-files requires an integer, got '{argv[i + 1]}'"
+                        }
+                    )
+                )
                 sys.exit(2)
             i += 2
         elif argv[i].startswith("--"):

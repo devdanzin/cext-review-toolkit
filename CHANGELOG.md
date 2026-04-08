@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **Safety annotation suppression**: `is_suppressed_by_comment()` convenience function in `scan_common.py` and wired into `scan_refcounts.py`, `scan_null_checks.py`, `scan_error_paths.py`. Findings near `cext-safe:`, `nolint`, `intentional`, etc. comments are tagged `suppressed: true`. (#40)
+- **New tests**: `tests/test_scan_common.py` for `deduplicate_findings`, `has_safety_annotation`, `parse_common_args`. Unit tests for `_count_pyarg_format_args()` format parser (15+ branch coverage). (#40)
+
+### Fixed
+- `scan_format_strings.py` `main()` now has the standard try/except error envelope matching all other scanners. (#40)
+- `scan_resource_lifecycle.py` `_load_resource_pairs()` now exits with error on data file failure instead of silently returning empty dict. (#40)
+- `analyze_history.py` `Popen` deadlock: added `proc.terminate()` before `proc.wait()`. (#40)
+- `analyze_history.py` unguarded `relative_to()` at line 255 now wrapped in try/except ValueError. (#40)
+- `analyze_history.py` `parse_args()` `int()` conversions now handle ValueError with descriptive JSON error messages. (#40)
+- Removed 11 unused imports across 6 scripts and 3 unused local variables. (#40)
+
+### Enhanced
+- Extracted `_is_guarded_by_exception_setting_api()` from `_check_return_without_exception` in `scan_error_paths.py` (complexity 9/10 → ~4/10). (#40)
+- Extracted `_count_c_params()` and `_resolve_slots()` from `scan_type_slots.py` hotspots (complexity 8/10 → ~4/10). (#40)
+
 ## [0.2.0] - 2026-04-08
 
 ### Added

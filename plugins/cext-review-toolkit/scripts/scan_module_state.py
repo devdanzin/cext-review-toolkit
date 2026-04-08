@@ -15,9 +15,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tree_sitter_utils import (
-    parse_bytes_for_file, extract_functions, find_calls_in_scope,
-    extract_struct_initializers, extract_static_declarations,
-    get_node_text, walk_descendants,
+    parse_bytes_for_file,
+    extract_functions,
+    find_calls_in_scope,
+    extract_struct_initializers,
+    extract_static_declarations,
 )
 from scan_common import find_project_root, discover_c_files, parse_common_args
 
@@ -35,18 +37,22 @@ def _check_init_style(functions, source_bytes):
         has_moduledef_init = "PyModuleDef_Init" in body_text
 
         if has_module_create and not has_moduledef_init:
-            findings.append({
-                "type": "single_phase_init",
-                "file": "",
-                "function": func["name"],
-                "line": func["start_line"],
-                "confidence": "high",
-                "detail": (f"{func['name']}() uses single-phase init "
-                           f"(PyModule_Create). Consider multi-phase init "
-                           f"(PyModuleDef_Init + Py_mod_exec) for "
-                           f"subinterpreter support"),
-                "init_style": "single_phase",
-            })
+            findings.append(
+                {
+                    "type": "single_phase_init",
+                    "file": "",
+                    "function": func["name"],
+                    "line": func["start_line"],
+                    "confidence": "high",
+                    "detail": (
+                        f"{func['name']}() uses single-phase init "
+                        f"(PyModule_Create). Consider multi-phase init "
+                        f"(PyModuleDef_Init + Py_mod_exec) for "
+                        f"subinterpreter support"
+                    ),
+                    "init_style": "single_phase",
+                }
+            )
 
     return findings
 
@@ -59,37 +65,53 @@ def _check_global_state(tree, source_bytes):
 
     for s in statics:
         if s["is_pyobject"] and not s["is_const"]:
-            findings.append({
-                "type": "global_pyobject_state",
-                "file": "",
-                "function": "(file scope)",
-                "line": s["start_line"],
-                "confidence": "high",
-                "detail": (f"Global mutable state: static PyObject* "
-                           f"'{s['name']}' — should be in module state "
-                           f"for subinterpreter support"),
-                "variable": s["name"],
-                "variable_type": s["type"],
-            })
+            findings.append(
+                {
+                    "type": "global_pyobject_state",
+                    "file": "",
+                    "function": "(file scope)",
+                    "line": s["start_line"],
+                    "confidence": "high",
+                    "detail": (
+                        f"Global mutable state: static PyObject* "
+                        f"'{s['name']}' — should be in module state "
+                        f"for subinterpreter support"
+                    ),
+                    "variable": s["name"],
+                    "variable_type": s["type"],
+                }
+            )
         elif not s["is_const"] and not s["is_pyobject"]:
             # Non-PyObject static mutable -- flag as lower concern.
             # Skip array types (struct initializers, method tables, etc.)
-            if s["type"] and any(t in s["type"] for t in
-                                  ("PyMethodDef", "PyModuleDef", "PyMemberDef",
-                                   "PyGetSetDef", "PyType_Slot", "PyModuleDef_Slot")):
+            if s["type"] and any(
+                t in s["type"]
+                for t in (
+                    "PyMethodDef",
+                    "PyModuleDef",
+                    "PyMemberDef",
+                    "PyGetSetDef",
+                    "PyType_Slot",
+                    "PyModuleDef_Slot",
+                )
+            ):
                 continue
-            findings.append({
-                "type": "static_mutable_state",
-                "file": "",
-                "function": "(file scope)",
-                "line": s["start_line"],
-                "confidence": "low",
-                "detail": (f"Static mutable variable '{s['name']}' "
-                           f"({s['type']}) — may break with "
-                           f"subinterpreters if modified after init"),
-                "variable": s["name"],
-                "variable_type": s["type"],
-            })
+            findings.append(
+                {
+                    "type": "static_mutable_state",
+                    "file": "",
+                    "function": "(file scope)",
+                    "line": s["start_line"],
+                    "confidence": "low",
+                    "detail": (
+                        f"Static mutable variable '{s['name']}' "
+                        f"({s['type']}) — may break with "
+                        f"subinterpreters if modified after init"
+                    ),
+                    "variable": s["name"],
+                    "variable_type": s["type"],
+                }
+            )
 
     return findings
 
@@ -148,19 +170,23 @@ def _check_module_traverse(tree, source_bytes):
                 missing.append("m_traverse")
             if m_clear in ("NULL", "0", ""):
                 missing.append("m_clear")
-            findings.append({
-                "type": "missing_module_traverse",
-                "file": "",
-                "function": "(module definition)",
-                "line": md["start_line"],
-                "confidence": "high",
-                "detail": (f"PyModuleDef '{md['variable_name']}' has "
-                           f"m_size={m_size} but missing "
-                           f"{', '.join(missing)}"),
-                "module_def": md["variable_name"],
-                "m_size": m_size,
-                "missing_methods": missing,
-            })
+            findings.append(
+                {
+                    "type": "missing_module_traverse",
+                    "file": "",
+                    "function": "(module definition)",
+                    "line": md["start_line"],
+                    "confidence": "high",
+                    "detail": (
+                        f"PyModuleDef '{md['variable_name']}' has "
+                        f"m_size={m_size} but missing "
+                        f"{', '.join(missing)}"
+                    ),
+                    "module_def": md["variable_name"],
+                    "m_size": m_size,
+                    "missing_methods": missing,
+                }
+            )
 
     return findings
 
@@ -171,17 +197,21 @@ def _check_static_type_objects(tree, source_bytes):
 
     type_inits = extract_struct_initializers(tree, source_bytes, "PyTypeObject")
     for ti in type_inits:
-        findings.append({
-            "type": "static_type_object",
-            "file": "",
-            "function": "(file scope)",
-            "line": ti["start_line"],
-            "confidence": "medium",
-            "detail": (f"Static PyTypeObject '{ti['variable_name']}' — "
-                       f"should be a heap type (PyType_FromSpec) for "
-                       f"multi-phase init and subinterpreter support"),
-            "type_name": ti["variable_name"],
-        })
+        findings.append(
+            {
+                "type": "static_type_object",
+                "file": "",
+                "function": "(file scope)",
+                "line": ti["start_line"],
+                "confidence": "medium",
+                "detail": (
+                    f"Static PyTypeObject '{ti['variable_name']}' — "
+                    f"should be a heap type (PyType_FromSpec) for "
+                    f"multi-phase init and subinterpreter support"
+                ),
+                "type_name": ti["variable_name"],
+            }
+        )
 
     return findings
 
@@ -192,13 +222,11 @@ def _check_module_add_object(functions, source_bytes):
 
     for func in functions:
         body = func["body_node"]
-        calls = find_calls_in_scope(body, source_bytes,
-                                     api_names={"PyModule_AddObject"})
+        calls = find_calls_in_scope(
+            body, source_bytes, api_names={"PyModule_AddObject"}
+        )
         for call in calls:
             # Check if the return value is tested.
-            body_text = get_node_text(body, source_bytes)
-            call_text = get_node_text(call["node"], source_bytes)
-
             parent = call["node"].parent
             checked = False
             node = parent
@@ -210,19 +238,23 @@ def _check_module_add_object(functions, source_bytes):
                     break
                 node = node.parent
 
-            findings.append({
-                "type": "module_add_object_misuse",
-                "file": "",
-                "function": func["name"],
-                "line": call["start_line"],
-                "confidence": "high" if not checked else "medium",
-                "detail": (f"PyModule_AddObject() used at line "
-                           f"{call['start_line']} — steals reference on "
-                           f"success only (pre-3.10). "
-                           f"{'Return value not checked. ' if not checked else ''}"
-                           f"Consider PyModule_AddObjectRef() instead"),
-                "checked": checked,
-            })
+            findings.append(
+                {
+                    "type": "module_add_object_misuse",
+                    "file": "",
+                    "function": func["name"],
+                    "line": call["start_line"],
+                    "confidence": "high" if not checked else "medium",
+                    "detail": (
+                        f"PyModule_AddObject() used at line "
+                        f"{call['start_line']} — steals reference on "
+                        f"success only (pre-3.10). "
+                        f"{'Return value not checked. ' if not checked else ''}"
+                        f"Consider PyModule_AddObjectRef() instead"
+                    ),
+                    "checked": checked,
+                }
+            )
 
     return findings
 

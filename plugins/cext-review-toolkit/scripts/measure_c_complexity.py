@@ -24,7 +24,7 @@ from pathlib import Path
 
 # Import shared utilities.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from tree_sitter_utils import parse_bytes_for_file, extract_functions, get_node_text, walk_descendants, strip_comments
+from tree_sitter_utils import parse_bytes_for_file, extract_functions
 from scan_common import find_project_root, discover_c_files, parse_common_args
 
 

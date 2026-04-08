@@ -2,7 +2,7 @@
 
 import shutil
 import unittest
-from helpers import import_script, TempExtension, MINIMAL_EXTENSION, EXTENSION_WITH_BUGS
+from helpers import import_script, TempExtension, MINIMAL_EXTENSION
 
 ext_tools = import_script("run_external_tools")
 

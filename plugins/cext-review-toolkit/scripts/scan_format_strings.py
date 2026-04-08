@@ -34,7 +34,9 @@ _PYARG_FORMAT_CODES = set("bBhHiIlLnOfdsUySzZpP")
 _BUILD_FORMAT_CODES = set("bBhHiIlLnOfdsUNSzZ")
 
 # Printf-style format codes (for PyErr_Format, PyUnicode_FromFormat).
-_PRINTF_FORMAT_RE = re.compile(r"%(?:\d+\$)?[-+ #0]*\d*(?:\.\d+)?(?:l{0,2}|z|j|t|h{0,2})?[diouxXeEfFgGaAcspnR%UV]")
+_PRINTF_FORMAT_RE = re.compile(
+    r"%(?:\d+\$)?[-+ #0]*\d*(?:\.\d+)?(?:l{0,2}|z|j|t|h{0,2})?[diouxXeEfFgGaAcspnR%UV]"
+)
 
 # APIs using PyArg_ParseTuple-style format strings.
 _PYARG_APIS = {
@@ -237,21 +239,23 @@ def _check_format_strings(func, source_bytes):
             continue
 
         if actual != expected:
-            findings.append({
-                "type": "format_string_mismatch",
-                "file": "",
-                "function": func["name"],
-                "line": call["start_line"],
-                "confidence": "high",
-                "detail": (
-                    f"{api_name}() format string expects {expected} "
-                    f"variadic arg(s) but {actual} provided"
-                ),
-                "api_call": api_name,
-                "format_string": fmt_str,
-                "expected_args": expected,
-                "actual_args": actual,
-            })
+            findings.append(
+                {
+                    "type": "format_string_mismatch",
+                    "file": "",
+                    "function": func["name"],
+                    "line": call["start_line"],
+                    "confidence": "high",
+                    "detail": (
+                        f"{api_name}() format string expects {expected} "
+                        f"variadic arg(s) but {actual} provided"
+                    ),
+                    "api_call": api_name,
+                    "format_string": fmt_str,
+                    "expected_args": expected,
+                    "actual_args": actual,
+                }
+            )
 
     return findings
 
@@ -313,10 +317,15 @@ def analyze(target: str, *, max_files: int = 0) -> dict:
 
 
 def main():
-    target, max_files = parse_common_args(sys.argv[1:])
-    result = analyze(target, max_files=max_files)
-    json.dump(result, sys.stdout, indent=2)
-    sys.stdout.write("\n")
+    try:
+        target, max_files = parse_common_args(sys.argv[1:])
+        result = analyze(target, max_files=max_files)
+        json.dump(result, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+    except Exception as e:
+        json.dump({"error": str(e), "type": type(e).__name__}, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

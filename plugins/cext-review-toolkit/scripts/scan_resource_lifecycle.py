@@ -17,12 +17,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tree_sitter_utils import (
-    parse_bytes_for_file, extract_functions, find_calls_in_scope,
-    find_return_statements, get_node_text, walk_descendants,
+    parse_bytes_for_file,
+    extract_functions,
+    find_calls_in_scope,
+    find_return_statements,
+    get_node_text,
+    walk_descendants,
     strip_comments,
 )
 from scan_common import (
-    find_project_root, discover_c_files, find_assigned_variable,
+    find_project_root,
+    discover_c_files,
+    find_assigned_variable,
     parse_common_args,
 )
 
@@ -39,8 +45,12 @@ def _load_resource_pairs() -> dict[str, list[str]]:
     try:
         with open(pairs_file, encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return {}
+    except (OSError, json.JSONDecodeError) as e:
+        print(
+            json.dumps({"error": f"Failed to load resource_pairs.json: {e}"}),
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     alloc_to_free: dict[str, list[str]] = {}
     for pair in data.get("pairs", []):
@@ -50,8 +60,9 @@ def _load_resource_pairs() -> dict[str, list[str]]:
     return alloc_to_free
 
 
-def _find_allocations(func: dict, source_bytes: bytes,
-                      alloc_to_free: dict[str, list[str]]) -> list[dict]:
+def _find_allocations(
+    func: dict, source_bytes: bytes, alloc_to_free: dict[str, list[str]]
+) -> list[dict]:
     """Find resource allocation calls in a function and their assigned variables."""
     allocations = []
     body = func["body_node"]
@@ -66,30 +77,35 @@ def _find_allocations(func: dict, source_bytes: bytes,
         alloc_func = call["function_name"]
         free_funcs = alloc_to_free.get(alloc_func, [])
 
-        allocations.append({
-            "variable": var_name,
-            "alloc_func": alloc_func,
-            "free_funcs": free_funcs,
-            "line": call["start_line"],
-            "call_node": call["node"],
-        })
+        allocations.append(
+            {
+                "variable": var_name,
+                "alloc_func": alloc_func,
+                "free_funcs": free_funcs,
+                "line": call["start_line"],
+                "call_node": call["node"],
+            }
+        )
 
     return allocations
 
 
-def _find_free_calls(func: dict, source_bytes: bytes,
-                     free_funcs: set[str]) -> list[dict]:
+def _find_free_calls(
+    func: dict, source_bytes: bytes, free_funcs: set[str]
+) -> list[dict]:
     """Find all free/release/close calls in a function."""
     body = func["body_node"]
     all_calls = find_calls_in_scope(body, source_bytes, api_names=free_funcs)
     result = []
     for call in all_calls:
         args_text = call.get("arguments_text", "")
-        result.append({
-            "function_name": call["function_name"],
-            "arguments_text": args_text,
-            "line": call["start_line"],
-        })
+        result.append(
+            {
+                "function_name": call["function_name"],
+                "arguments_text": args_text,
+                "line": call["start_line"],
+            }
+        )
     return result
 
 
@@ -114,12 +130,14 @@ def _find_exit_points(func: dict, source_bytes: bytes) -> list[dict]:
     returns = find_return_statements(body, source_bytes)
     for ret in returns:
         value = ret.get("value_text") or ""
-        exits.append({
-            "type": "return",
-            "line": ret["start_line"],
-            "value": value,
-            "is_error": _is_error_return(value),
-        })
+        exits.append(
+            {
+                "type": "return",
+                "line": ret["start_line"],
+                "value": value,
+                "is_error": _is_error_return(value),
+            }
+        )
 
     return exits
 
@@ -130,19 +148,19 @@ def _is_error_return(value: str) -> bool:
     return v in ("NULL", "-1", "0") or v == ""
 
 
-def _variable_freed_in_text(var_name: str, free_funcs: list[str],
-                             text: str) -> bool:
+def _variable_freed_in_text(var_name: str, free_funcs: list[str], text: str) -> bool:
     """Check if a variable is freed in a given text span."""
     for free_func in free_funcs:
         # Match free_func(var) or free_func(&var) or free_func(self->var)
-        pattern = rf'{re.escape(free_func)}\s*\([^)]*\b{re.escape(var_name)}\b'
+        pattern = rf"{re.escape(free_func)}\s*\([^)]*\b{re.escape(var_name)}\b"
         if re.search(pattern, text):
             return True
     return False
 
 
-def _check_resource_lifecycle(func: dict, source_bytes: bytes,
-                               alloc_to_free: dict[str, list[str]]) -> list[dict]:
+def _check_resource_lifecycle(
+    func: dict, source_bytes: bytes, alloc_to_free: dict[str, list[str]]
+) -> list[dict]:
     """Check that all allocated resources are freed on all exit paths."""
     findings = []
     allocations = _find_allocations(func, source_bytes, alloc_to_free)
@@ -175,19 +193,23 @@ def _check_resource_lifecycle(func: dict, source_bytes: bytes,
             if _is_returned_or_stored(var, body_text):
                 continue
 
-            findings.append({
-                "type": "resource_never_freed",
-                "file": "",
-                "function": func["name"],
-                "line": alloc_line,
-                "confidence": "high",
-                "detail": (f"Resource '{var}' allocated by {alloc['alloc_func']}() "
-                           f"is never freed by {'/'.join(free_funcs)}() "
-                           f"in function '{func['name']}'"),
-                "variable": var,
-                "alloc_func": alloc["alloc_func"],
-                "expected_free": free_funcs,
-            })
+            findings.append(
+                {
+                    "type": "resource_never_freed",
+                    "file": "",
+                    "function": func["name"],
+                    "line": alloc_line,
+                    "confidence": "high",
+                    "detail": (
+                        f"Resource '{var}' allocated by {alloc['alloc_func']}() "
+                        f"is never freed by {'/'.join(free_funcs)}() "
+                        f"in function '{func['name']}'"
+                    ),
+                    "variable": var,
+                    "alloc_func": alloc["alloc_func"],
+                    "expected_free": free_funcs,
+                }
+            )
             continue
 
         # Resource IS freed somewhere — check if it's freed on error paths too.
@@ -211,8 +233,9 @@ def _check_resource_lifecycle(func: dict, source_bytes: bytes,
 
             # Skip error returns that are the NULL check for this allocation
             # itself (the resource doesn't exist on this path).
-            if _is_null_check_for_alloc(var, alloc_line, exit_line,
-                                         body_text, func["start_line"]):
+            if _is_null_check_for_alloc(
+                var, alloc_line, exit_line, body_text, func["start_line"]
+            ):
                 continue
 
             # Check if the variable is freed in this span.
@@ -221,20 +244,24 @@ def _check_resource_lifecycle(func: dict, source_bytes: bytes,
                 if _has_goto_cleanup_freeing(var, free_funcs, span, body_text):
                     continue
 
-                findings.append({
-                    "type": "resource_leak_on_error_path",
-                    "file": "",
-                    "function": func["name"],
-                    "line": exit_line,
-                    "confidence": "medium",
-                    "detail": (f"Resource '{var}' (allocated at line {alloc_line} "
-                               f"by {alloc['alloc_func']}()) may not be freed "
-                               f"before error return at line {exit_line}"),
-                    "variable": var,
-                    "alloc_func": alloc["alloc_func"],
-                    "alloc_line": alloc_line,
-                    "expected_free": free_funcs,
-                })
+                findings.append(
+                    {
+                        "type": "resource_leak_on_error_path",
+                        "file": "",
+                        "function": func["name"],
+                        "line": exit_line,
+                        "confidence": "medium",
+                        "detail": (
+                            f"Resource '{var}' (allocated at line {alloc_line} "
+                            f"by {alloc['alloc_func']}()) may not be freed "
+                            f"before error return at line {exit_line}"
+                        ),
+                        "variable": var,
+                        "alloc_func": alloc["alloc_func"],
+                        "alloc_line": alloc_line,
+                        "expected_free": free_funcs,
+                    }
+                )
 
     return findings
 
@@ -254,18 +281,19 @@ def _is_returned_or_stored(var: str, body_text: str) -> bool:
     """Check if a variable is returned directly or stored in a struct member."""
     # Check for direct return: return var; or return (type*)var;
     # But NOT return func(var) — that's passing as argument, not returning.
-    if re.search(rf'\breturn\s+(?:\([^)]*\)\s*)?{re.escape(var)}\s*;', body_text):
+    if re.search(rf"\breturn\s+(?:\([^)]*\)\s*)?{re.escape(var)}\s*;", body_text):
         return True
     # Check for struct member assignment: self->field = var or obj.field = var.
-    if re.search(rf'->\w+\s*=\s*(?:\([^)]*\)\s*)?{re.escape(var)}\s*;', body_text):
+    if re.search(rf"->\w+\s*=\s*(?:\([^)]*\)\s*)?{re.escape(var)}\s*;", body_text):
         return True
-    if re.search(rf'\.\w+\s*=\s*(?:\([^)]*\)\s*)?{re.escape(var)}\s*;', body_text):
+    if re.search(rf"\.\w+\s*=\s*(?:\([^)]*\)\s*)?{re.escape(var)}\s*;", body_text):
         return True
     return False
 
 
-def _is_null_check_for_alloc(var: str, alloc_line: int, exit_line: int,
-                             full_body: str, func_start_line: int) -> bool:
+def _is_null_check_for_alloc(
+    var: str, alloc_line: int, exit_line: int, full_body: str, func_start_line: int
+) -> bool:
     """Check if the error return is inside a NULL check for the allocated variable.
 
     E.g., the error return in: if (buf == NULL) { return NULL; }
@@ -277,8 +305,7 @@ def _is_null_check_for_alloc(var: str, alloc_line: int, exit_line: int,
     # Get the text from 1 line before alloc to 4 lines after alloc.
     # The if-check typically follows on the next line after the allocation.
     check_start = max(0, alloc_line - func_start_line - 1)
-    check_end = min(alloc_line - func_start_line + 4,
-                    full_body.count("\n") + 1)
+    check_end = min(alloc_line - func_start_line + 4, full_body.count("\n") + 1)
 
     start_offset = _line_to_offset(full_body, check_start)
     end_offset = _line_to_offset(full_body, check_end)
@@ -294,25 +321,26 @@ def _is_null_check_for_alloc(var: str, alloc_line: int, exit_line: int,
         return False
 
     patterns = [
-        rf'\bif\s*\(\s*!\s*{re.escape(var)}\s*\)',
-        rf'\bif\s*\(\s*{re.escape(var)}\s*==\s*NULL\s*\)',
-        rf'\bif\s*\(\s*{re.escape(var)}\s*==\s*0\s*\)',
-        rf'\bif\s*\(\s*{re.escape(var)}\s*<\s*0\s*\)',
+        rf"\bif\s*\(\s*!\s*{re.escape(var)}\s*\)",
+        rf"\bif\s*\(\s*{re.escape(var)}\s*==\s*NULL\s*\)",
+        rf"\bif\s*\(\s*{re.escape(var)}\s*==\s*0\s*\)",
+        rf"\bif\s*\(\s*{re.escape(var)}\s*<\s*0\s*\)",
     ]
     return any(re.search(p, context) for p in patterns)
 
 
-def _has_goto_cleanup_freeing(var: str, free_funcs: list[str],
-                               span: str, full_body: str) -> bool:
+def _has_goto_cleanup_freeing(
+    var: str, free_funcs: list[str], span: str, full_body: str
+) -> bool:
     """Check if the span contains a goto to a cleanup label that frees var."""
-    goto_matches = re.finditer(r'\bgoto\s+(\w+)', span)
+    goto_matches = re.finditer(r"\bgoto\s+(\w+)", span)
     for m in goto_matches:
         label = m.group(1)
         # Find text after the label in the full body.
-        label_pattern = rf'\b{re.escape(label)}\s*:'
+        label_pattern = rf"\b{re.escape(label)}\s*:"
         label_match = re.search(label_pattern, full_body)
         if label_match:
-            cleanup_text = full_body[label_match.end():]
+            cleanup_text = full_body[label_match.end() :]
             if _variable_freed_in_text(var, free_funcs, cleanup_text):
                 return True
     return False

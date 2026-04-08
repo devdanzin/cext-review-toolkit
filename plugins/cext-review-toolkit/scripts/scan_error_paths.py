@@ -16,27 +16,45 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tree_sitter_utils import (
-    parse_bytes_for_file, extract_functions, find_calls_in_scope,
-    find_return_statements, get_node_text, walk_descendants,
-    get_declarator_name,
+    parse_bytes_for_file,
+    extract_functions,
+    find_calls_in_scope,
+    find_return_statements,
+    get_node_text,
+    walk_descendants,
 )
 from scan_common import (
-    find_project_root, discover_c_files, load_api_tables,
-    find_assigned_variable, PYARG_PARSE_APIS, parse_common_args,
+    find_project_root,
+    discover_c_files,
+    load_api_tables,
+    find_assigned_variable,
+    is_suppressed_by_comment,
+    PYARG_PARSE_APIS,
+    parse_common_args,
 )
 
 
 _PYERR_SET_APIS = {
-    "PyErr_SetString", "PyErr_Format", "PyErr_SetObject",
-    "PyErr_NoMemory", "PyErr_BadArgument", "PyErr_SetNone",
-    "PyErr_BadInternalCall", "PyErr_SetFromErrno",
+    "PyErr_SetString",
+    "PyErr_Format",
+    "PyErr_SetObject",
+    "PyErr_NoMemory",
+    "PyErr_BadArgument",
+    "PyErr_SetNone",
+    "PyErr_BadInternalCall",
+    "PyErr_SetFromErrno",
     "PyErr_SetFromErrnoWithFilename",
     "PyErr_SetFromWindowsErr",
 }
 
 _CLEANUP_APIS = {
-    "Py_DECREF", "Py_XDECREF", "Py_CLEAR", "Py_SETREF",
-    "PyMem_Free", "PyObject_Free", "free",
+    "Py_DECREF",
+    "Py_XDECREF",
+    "Py_CLEAR",
+    "Py_SETREF",
+    "PyMem_Free",
+    "PyObject_Free",
+    "free",
 }
 
 
@@ -61,13 +79,15 @@ def _check_missing_null_check(func, source_bytes, api_tables):
         # Check if the variable is NULL-checked before next significant use.
         # Look for if (var == NULL), if (!var), if (var) in the body text
         # after the assignment.
-        after_text = body_text[call["node"].end_byte - body.start_byte:]
-        has_null_check = bool(re.search(
-            r'\b(?:if\s*\(\s*' + re.escape(var) + r'\s*==\s*NULL|'
-            r'if\s*\(\s*!\s*' + re.escape(var) + r'\b|'
-            r'if\s*\(\s*' + re.escape(var) + r'\s*(?:!=\s*NULL|==\s*NULL))',
-            after_text
-        ))
+        after_text = body_text[call["node"].end_byte - body.start_byte :]
+        has_null_check = bool(
+            re.search(
+                r"\b(?:if\s*\(\s*" + re.escape(var) + r"\s*==\s*NULL|"
+                r"if\s*\(\s*!\s*" + re.escape(var) + r"\b|"
+                r"if\s*\(\s*" + re.escape(var) + r"\s*(?:!=\s*NULL|==\s*NULL))",
+                after_text,
+            )
+        )
 
         if not has_null_check:
             # Check if it's used as a direct return (return func()) -- that's fine.
@@ -79,19 +99,62 @@ def _check_missing_null_check(func, source_bytes, api_tables):
             if gparent and gparent.type in ("if_statement", "conditional_expression"):
                 continue
 
-            findings.append({
-                "type": "missing_null_check",
-                "file": "",
-                "function": func["name"],
-                "line": call["start_line"],
-                "confidence": "medium",
-                "detail": (f"Return value of {call['function_name']}() "
-                           f"assigned to '{var}' without NULL check"),
-                "api_call": call["function_name"],
-                "variable": var,
-            })
+            findings.append(
+                {
+                    "type": "missing_null_check",
+                    "file": "",
+                    "function": func["name"],
+                    "line": call["start_line"],
+                    "confidence": "medium",
+                    "detail": (
+                        f"Return value of {call['function_name']}() "
+                        f"assigned to '{var}' without NULL check"
+                    ),
+                    "api_call": call["function_name"],
+                    "variable": var,
+                }
+            )
 
     return findings
+
+
+def _is_guarded_by_exception_setting_api(
+    ret_node,
+    body,
+    all_calls: list[dict],
+    new_ref_apis: set[str],
+    source_bytes: bytes,
+    ret_byte: int,
+) -> bool:
+    """Check if a return is inside a NULL-check for an exception-setting API.
+
+    Walks up the AST from the return statement looking for an enclosing
+    if-statement whose condition tests a variable assigned from a
+    new-reference or PyArg_Parse API call (which set their own exceptions).
+    """
+    parent = ret_node.parent
+    while parent and parent != body:
+        if parent.type == "if_statement":
+            cond = parent.child_by_field_name("condition")
+            if cond:
+                cond_text = get_node_text(cond, source_bytes)
+                if re.search(r"==\s*NULL|!\s*\w", cond_text):
+                    for ac in all_calls:
+                        if ac["start_byte"] >= ret_byte:
+                            break
+                        if (
+                            ac["function_name"] in new_ref_apis
+                            or ac["function_name"] in PYARG_PARSE_APIS
+                        ):
+                            var = find_assigned_variable(ac["node"], source_bytes)
+                            if var and re.search(
+                                r"\b" + re.escape(var) + r"\b",
+                                cond_text,
+                            ):
+                                return True
+            break
+        parent = parent.parent
+    return False
 
 
 def _check_return_without_exception(func, source_bytes, api_tables):
@@ -100,7 +163,6 @@ def _check_return_without_exception(func, source_bytes, api_tables):
     body = func["body_node"]
     new_ref_apis = set(api_tables["new_ref_apis"])
 
-    # Check if this function ever returns PyObject* (NULL return is error).
     returns_pyobject = "PyObject" in func["return_type"]
     returns_int = func["return_type"].strip() in ("int", "static int")
 
@@ -120,54 +182,28 @@ def _check_return_without_exception(func, source_bytes, api_tables):
         ret_byte = ret["node"].start_byte
 
         # Check if there's a PyErr_* call before this return.
-        has_err_set = False
-        for ec in pyerr_calls:
-            if ec["start_byte"] < ret_byte:
-                has_err_set = True
-                break
-
+        has_err_set = any(ec["start_byte"] < ret_byte for ec in pyerr_calls)
         if has_err_set:
             continue
 
-        # Check if this error return is inside a NULL-check block for an API
-        # that sets its own exception. Only suppress if the return is guarded
-        # by a condition testing a variable from an exception-setting API.
-        has_api_err = False
-        parent = ret["node"].parent
-        while parent and parent != body:
-            if parent.type == "if_statement":
-                cond = parent.child_by_field_name("condition")
-                if cond:
-                    cond_text = get_node_text(cond, source_bytes)
-                    if re.search(r'==\s*NULL|!\s*\w', cond_text):
-                        for ac in all_calls:
-                            if ac["start_byte"] >= ret_byte:
-                                break
-                            if ac["function_name"] in new_ref_apis or \
-                               ac["function_name"] in PYARG_PARSE_APIS:
-                                var = find_assigned_variable(
-                                    ac["node"], source_bytes)
-                                if var and re.search(
-                                    r'\b' + re.escape(var) + r'\b',
-                                    cond_text,
-                                ):
-                                    has_api_err = True
-                                    break
-                break
-            parent = parent.parent
-
-        if has_api_err:
+        if _is_guarded_by_exception_setting_api(
+            ret["node"], body, all_calls, new_ref_apis, source_bytes, ret_byte
+        ):
             continue
 
-        findings.append({
-            "type": "return_without_exception",
-            "file": "",
-            "function": func["name"],
-            "line": ret["start_line"],
-            "confidence": "medium",
-            "detail": (f"Returns {error_value} at line {ret['start_line']} "
-                       f"without a preceding PyErr_Set* call"),
-        })
+        findings.append(
+            {
+                "type": "return_without_exception",
+                "file": "",
+                "function": func["name"],
+                "line": ret["start_line"],
+                "confidence": "medium",
+                "detail": (
+                    f"Returns {error_value} at line {ret['start_line']} "
+                    f"without a preceding PyErr_Set* call"
+                ),
+            }
+        )
 
     return findings
 
@@ -176,7 +212,6 @@ def _check_exception_clobbering(func, source_bytes, api_tables):
     """Find places where a pending exception may be clobbered."""
     findings = []
     body = func["body_node"]
-    new_ref_apis = set(api_tables["new_ref_apis"])
 
     # Look for if-blocks that check for NULL (error detection),
     # then call non-cleanup Python APIs before returning.
@@ -187,9 +222,7 @@ def _check_exception_clobbering(func, source_bytes, api_tables):
         cond_text = get_node_text(cond, source_bytes)
 
         # Check if condition tests for error (== NULL, < 0).
-        is_error_check = bool(re.search(
-            r'==\s*NULL|<\s*0|!\s*\w', cond_text
-        ))
+        is_error_check = bool(re.search(r"==\s*NULL|<\s*0|!\s*\w", cond_text))
         if not is_error_check:
             continue
 
@@ -206,18 +239,22 @@ def _check_exception_clobbering(func, source_bytes, api_tables):
                 continue
             if fn.startswith("Py") or fn.startswith("_Py"):
                 # Non-cleanup, non-error-setting Python API in error path.
-                findings.append({
-                    "type": "exception_clobbering",
-                    "file": "",
-                    "function": func["name"],
-                    "line": call["start_line"],
-                    "confidence": "medium",
-                    "detail": (f"Call to {fn}() in error handling block "
-                               f"(line {if_node.start_point[0] + 1}) could "
-                               f"clobber the pending exception"),
-                    "api_call": fn,
-                    "error_check_line": if_node.start_point[0] + 1,
-                })
+                findings.append(
+                    {
+                        "type": "exception_clobbering",
+                        "file": "",
+                        "function": func["name"],
+                        "line": call["start_line"],
+                        "confidence": "medium",
+                        "detail": (
+                            f"Call to {fn}() in error handling block "
+                            f"(line {if_node.start_point[0] + 1}) could "
+                            f"clobber the pending exception"
+                        ),
+                        "api_call": fn,
+                        "error_check_line": if_node.start_point[0] + 1,
+                    }
+                )
 
     return findings
 
@@ -235,8 +272,12 @@ def _check_unchecked_pyarg_parse(func, source_bytes, api_tables):
         checked = False
         node = call["node"].parent
         while node and node != body:
-            if node.type in ("if_statement", "parenthesized_expression",
-                             "unary_expression", "binary_expression"):
+            if node.type in (
+                "if_statement",
+                "parenthesized_expression",
+                "unary_expression",
+                "binary_expression",
+            ):
                 checked = True
                 break
             if node.type in ("expression_statement",):
@@ -245,15 +286,17 @@ def _check_unchecked_pyarg_parse(func, source_bytes, api_tables):
             node = node.parent
 
         if not checked:
-            findings.append({
-                "type": "unchecked_pyarg_parse",
-                "file": "",
-                "function": func["name"],
-                "line": call["start_line"],
-                "confidence": "high",
-                "detail": (f"{call['function_name']}() return value not checked"),
-                "api_call": call["function_name"],
-            })
+            findings.append(
+                {
+                    "type": "unchecked_pyarg_parse",
+                    "file": "",
+                    "function": func["name"],
+                    "line": call["start_line"],
+                    "confidence": "high",
+                    "detail": (f"{call['function_name']}() return value not checked"),
+                    "api_call": call["function_name"],
+                }
+            )
 
     return findings
 
@@ -290,16 +333,20 @@ def analyze(target: str, *, max_files: int = 0) -> dict:
 
         for func in functions:
             total_functions += 1
-            for checker in (_check_missing_null_check,
-                            _check_return_without_exception,
-                            _check_exception_clobbering,
-                            _check_unchecked_pyarg_parse):
+            for checker in (
+                _check_missing_null_check,
+                _check_return_without_exception,
+                _check_exception_clobbering,
+                _check_unchecked_pyarg_parse,
+            ):
                 for f in checker(func, source_bytes, api_tables):
                     f["file"] = rel
+                    if is_suppressed_by_comment(source_bytes, tree, f.get("line", 0)):
+                        f["suppressed"] = True
                     findings.append(f)
 
-    by_type = defaultdict(int)
-    by_confidence = defaultdict(int)
+    by_type: dict[str, int] = defaultdict(int)
+    by_confidence: dict[str, int] = defaultdict(int)
     for f in findings:
         by_type[f["type"]] += 1
         by_confidence[f["confidence"]] += 1
