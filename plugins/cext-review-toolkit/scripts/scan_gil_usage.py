@@ -328,6 +328,63 @@ def _check_free_threading(tree, source_bytes):
     return findings
 
 
+def _check_object_invalidation(func, source_bytes):
+    """Check for self->member use after GIL release/reacquire.
+
+    When the GIL is released, another thread could call close() or
+    mutate the object's state. After reacquiring the GIL, code that
+    uses self->member without re-validation is operating on potentially
+    stale/invalid state.
+    """
+    findings = []
+    body_text = func["body"]
+
+    begin_re = re.compile(r"Py_BEGIN_ALLOW_THREADS")
+    end_re = re.compile(r"Py_END_ALLOW_THREADS")
+
+    begins = list(begin_re.finditer(body_text))
+    ends = list(end_re.finditer(body_text))
+
+    for b in begins:
+        matching_end = None
+        for e in ends:
+            if e.start() > b.end():
+                matching_end = e
+                break
+        if not matching_end:
+            continue
+
+        # Get the code AFTER Py_END_ALLOW_THREADS (post-reacquire region)
+        post_region = body_text[matching_end.end():]
+
+        # Find self->member accesses in the post-reacquire region
+        member_accesses = re.finditer(
+            r"\bself\s*->\s*(\w+)", post_region
+        )
+        for m in member_accesses:
+            member = m.group(1)
+            # Check if this member was also accessed BEFORE the GIL release
+            pre_region = body_text[:b.start()]
+            if re.search(rf"\bself\s*->\s*{re.escape(member)}\b", pre_region):
+                line_offset = body_text[:matching_end.end() + m.start()].count("\n")
+                findings.append({
+                    "type": "object_invalidation_across_gil_release",
+                    "file": "",
+                    "function": func["name"],
+                    "line": func["start_line"] + line_offset,
+                    "confidence": "medium",
+                    "detail": (
+                        f"self->{member} used after GIL reacquire "
+                        f"(another thread could have invalidated it "
+                        f"during Py_BEGIN/END_ALLOW_THREADS)"
+                    ),
+                    "member": member,
+                })
+                break  # One finding per GIL-release region
+
+    return findings
+
+
 def analyze(target: str, *, max_files: int = 0) -> dict:
     """Scan C files for GIL discipline issues."""
     target_path = Path(target).resolve()
@@ -362,7 +419,8 @@ def analyze(target: str, *, max_files: int = 0) -> dict:
             for checker in (_check_mismatched_allow_threads,
                             _check_api_without_gil,
                             _check_blocking_with_gil,
-                            _check_mismatched_gilstate):
+                            _check_mismatched_gilstate,
+                            _check_object_invalidation):
                 for f in checker(func, source_bytes):
                     f["file"] = rel
                     findings.append(f)
