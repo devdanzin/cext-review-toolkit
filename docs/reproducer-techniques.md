@@ -15,6 +15,8 @@ The extension must be **installed and importable**. Building extensions is proje
 - `weakref.ref(obj)` — verify an object is actually freed
 - `sys.gettotalrefcount()` — total refcount delta (debug builds only)
 - `id()` on freed objects — use-after-free detection (may segfault or return stale data)
+- `_testcapi.set_nomemory(n, stop)` — OOM injection at the Python allocator level (see Technique 18). Hooks `PYMEM_DOMAIN_RAW` only.
+- `libfiu` + `fiu_posix_preload.so` — OOM injection at the system allocator level, including foreign C libraries linked by the extension (see Technique 23). Reaches `malloc`/`calloc`/`realloc`/`mmap`/`open`/etc. Complements `set_nomemory`.
 
 ---
 
@@ -446,49 +448,132 @@ def measure_memleak(func, iterations=5000):
 
 ## Technique 18: OOM injection via `_testcapi.set_nomemory`
 
-**Triggers**: Any unchecked allocation (`PyType_GenericAlloc`, `PyList_New`, `PyDict_New`, `malloc`, etc.) that dereferences the result without a NULL check.
+**Triggers**: Any unchecked allocation (`PyType_GenericAlloc`, `PyList_New`, `PyDict_New`, `PyUnicode_FromString`, `PyObject_Malloc`, etc.) that dereferences the result without a NULL check.
 
 **Bug class**: C code calls an allocation function, doesn't check for NULL, and dereferences the result. Under normal conditions these rarely fail, but `_testcapi.set_nomemory(n, 0)` forces all allocations after the `n`-th one to fail, systematically exercising every OOM error path.
 
+### What `set_nomemory` actually hooks
+
+`set_nomemory(start, stop)` installs a counting allocator that replaces **all three** CPython allocator domains: `PYMEM_DOMAIN_RAW` (used by `PyMem_RawMalloc`, interpreter-critical bookkeeping), `PYMEM_DOMAIN_MEM` (used by `PyMem_Malloc`), and `PYMEM_DOMAIN_OBJ` (used by `PyObject_Malloc` / `PyObject_New` / `PyDict_New` / `PyTuple_New` / etc). See `_testcapi/mem.c:120-145` in CPython. This means it reaches every allocation that CPython itself performs — including all pymalloc pool refills, object creation, and temporary string construction.
+
+**What it does NOT hook**: direct calls to `malloc`/`calloc`/`realloc` from C libraries that bypass CPython's allocator (libzstd, HDF5, libxml2, etc.). For those, use Technique 23 (libfiu + `LD_PRELOAD`).
+
+**Count semantics**: `set_nomemory(start, stop)`:
+- Resets the internal counter to 0 on each call.
+- Increments the counter on every allocation (across all 3 domains).
+- Fails the allocation if `count > start AND (stop <= 0 OR count <= stop)`.
+- So `set_nomemory(N, 0)` = "fail all allocations from count=N+1 onwards"; `set_nomemory(N-1, N)` = "fail exactly allocation #N".
+
+### Dense sweep vs sparse sweep (critical)
+
+**Always sweep densely.** A sparse sweep (`n ∈ [0, 5, 10, 20, 50, 100, 200]`) can miss narrow crash windows that are a single allocation wide. In a 2026-04-12 wrapt re-audit I hit exactly this trap: a sparse sweep of `import wrapt._wrappers` under OOM showed "no crashes, just MemoryError" because my test points happened to straddle a one-allocation crash window. A subsequent dense sweep of `[0..199]` found a segfault at exactly `start=47` (one iteration out of 200), with all 199 other points producing clean `MemoryError`.
+
+The crash turned out to be in CPython's `_PyFrame_GetLocals` at `Objects/frameobject.c:2290` — a missing NULL check after `_PyFrame_GetFrameObject`, introduced by the PEP 667 implementation and tracked as [gh-146092](https://github.com/python/cpython/issues/146092) (already fixed upstream on 2026-03-18 by commit `e1e4852133e`, backported to 3.13 and 3.14). Not a wrapt bug — just a latent OOM hazard in CPython's `locals()` fast path that any dense OOM sweep of an older 3.13.x or 3.14.x build will hit before reaching the target. The methodology lesson is general: **unchecked allocations can have a window as narrow as one allocation**, and a sparse sweep that skips that value will silently mis-classify the code as safe.
+
+### Subprocess isolation (critical)
+
+**Run each iteration in its own subprocess.** A segfault terminates the Python interpreter, so an in-process loop only reports the FIRST crash and then dies. Worse, pipe-wrapped invocations can silently hide the segfault: `timeout 10 python test.py 2>&1 | head -30; echo $?` reports the exit code of the pipeline (which is `echo`'s 0), not Python's 139. You only discover the crash when running Python directly.
+
+### Correct sweep harness
+
 ```python
-import _testcapi
+import subprocess
+import sys
 
-def oom_scan(func, max_n=500):
-    """Call func() with OOM injected at every allocation point.
+TEMPLATE = r"""
+import _testcapi, faulthandler
+faulthandler.enable()  # prints C stack on SIGSEGV to stderr
+_testcapi.set_nomemory({start}, 0)
+try:
+    target_function_under_test()
+    print("ok")
+except MemoryError:
+    print("MemoryError")
+except BaseException as e:
+    print(type(e).__name__)
+finally:
+    _testcapi.remove_mem_hooks()
+"""
 
-    If func() has an unchecked allocation, this will segfault
-    at the specific allocation number that triggers it.
+
+def oom_dense_sweep(target_source, max_start=200):
+    """Run a dense 0..max_start sweep of set_nomemory over `target_source`.
+
+    `target_source` is a Python source string that defines and invokes
+    a function named `target_function_under_test`. Each start value is
+    tested in a fresh subprocess so a crash in one does not terminate
+    the sweep.
+
+    Returns a list of (start, returncode, last_stdout_line, last_stderr_line).
     """
-    for n in range(1, max_n):
-        _testcapi.set_nomemory(n, 0)
-        try:
-            func()
-            _testcapi.remove_mem_hooks()
-            break  # No more allocations to fail
-        except MemoryError:
-            _testcapi.remove_mem_hooks()
-        except:
-            _testcapi.remove_mem_hooks()
-    print(f"Survived {max_n} iterations without segfault")
+    results = []
+    for start in range(0, max_start):
+        script = target_source + TEMPLATE.format(start=start)
+        r = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True, timeout=30,
+        )
+        stdout_tail = (r.stdout.strip().splitlines() or [""])[-1]
+        stderr_tail = (r.stderr.strip().splitlines() or [""])[-1]
+        results.append((start, r.returncode, stdout_tail, stderr_tail))
+        # rc < 0 = killed by signal (most commonly -11 = SIGSEGV)
+        # rc == 139 = also SIGSEGV (128 + 11) depending on shell convention
+        # rc == 1 = clean Python exception exit
+        if r.returncode < 0 or r.returncode == 139:
+            print(f"CRASH at start={start}: rc={r.returncode}")
+            print(f"  stderr tail: {stderr_tail[:120]}")
+    return results
 
-# Example: test trait creation under OOM
-from traits.api import HasTraits, Int, on_trait_change
 
-class Obj(HasTraits):
-    x = Int()
-    @on_trait_change("x")
-    def _x_changed(self, new):
-        pass
+TARGET = r"""
+import wrapt._wrappers
+def target_function_under_test():
+    fw = wrapt._wrappers._FunctionWrapperBase.__new__(
+        wrapt._wrappers._FunctionWrapperBase)
+    fw(1, 2, 3)  # crash site: lazy-init guard missing
+"""
+results = oom_dense_sweep(TARGET, max_start=200)
 
-oom_scan(lambda: setattr(Obj(), "x", 42))
-# Segmentation fault at whichever allocation lacks a NULL check
+crashes = [r for r in results if r[1] < 0 or r[1] == 139]
+print(f"\n{len(crashes)} crash(es) out of {len(results)}")
+for start, rc, out, err in crashes:
+    print(f"  start={start} rc={rc}")
 ```
 
-**How it works**: `_testcapi.set_nomemory(n, 0)` installs a custom memory allocator that lets the first `n` allocations succeed, then returns NULL for all subsequent ones. This systematically tests every allocation point in the code path. When an unchecked allocation fails, the NULL return is dereferenced, causing a segfault.
+### Module-init OOM testing
 
-**Requirements**: CPython with `_testcapi` module (standard in CPython builds, not available in all distributions). Call `_testcapi.remove_mem_hooks()` in every exception handler to restore normal allocation before any cleanup code runs.
+If the target is a **module's init code** (e.g., `wrapt_exec`, `PyInit_*`), you cannot use `del sys.modules[...]; import ...` in the same process to re-trigger init — CPython caches the `dlopen`'d `.so` at the dynamic linker level, and the subsequent `import` returns the existing module reference without re-running init. Use subprocess isolation instead: arm `set_nomemory` BEFORE the `import` statement in a fresh child, and each subprocess gets a fresh `dlopen` + fresh module init.
 
-**Confirmed on**: traits (`get_trait` unchecked `PyType_GenericAlloc` — segfault)
+### Common pitfalls
+
+1. **Sparse sweeps miss narrow windows.** Always sweep densely (every integer from 0 upward), not samples. One-allocation-wide crash windows exist and are invisible to `[0, 5, 10, 20, 50, ...]` sampling.
+2. **Piped shell invocations hide segfaults.** `python test.py 2>&1 | head` reports the pipeline's exit status, not Python's. Run Python directly or capture `subprocess.run(...).returncode` in a parent process.
+3. **In-process loops only catch the first crash.** A segfault terminates the interpreter. Use subprocess-per-iteration.
+4. **`faulthandler.enable()` must be called BEFORE arming the hook.** Otherwise the signal handler installation itself may allocate and fail.
+5. **`_testcapi.remove_mem_hooks()` in `finally`.** Without it, subsequent Python cleanup (exception formatting, frame destruction) runs under the hook and can cascade-fail.
+6. **Exception formatting allocates.** Under aggressive OOM, `except MemoryError as e: print(f"{type(e).__name__}: {e}")` can itself raise `MemoryError` inside the f-string construction. Keep error logging allocation-free: `print("MemoryError")` instead of `print(f"MemoryError: {e}")`.
+7. **Not all crashes are the target's fault.** The wrapt re-audit crash at `start=47` was initially mis-attributed to setuptools's `_distutils_hack.DistutilsMetaFinder.find_spec` (because that's what `faulthandler` named in the Python traceback), but narrowing showed the real root cause was CPython itself — a missing NULL check in `_PyFrame_GetLocals` at `Objects/frameobject.c:2290` under OOM via the PEP 667 frame-locals-proxy path. Tracked as [gh-146092](https://github.com/python/cpython/issues/146092) and already fixed upstream. When you find a crash, always (a) confirm it reproduces with a DIFFERENT target module under the same OOM budget, (b) narrow the reproducer until it has zero third-party dependencies, and (c) check that your Python interpreter is past any known OOM-hardening fixes.
+
+8. **Your Python interpreter may itself have OOM bugs.** Any dense `set_nomemory` sweep is effectively a fuzz test against CPython's own error-path coverage. Running on a slightly-old CPython build can surface crashes that have nothing to do with your target. Always update to the latest patch release of your Python version before concluding that a crash is in the extension under test.
+
+### Exit code meanings
+
+- `rc == 0`: target succeeded — the OOM budget was larger than the total allocations the target makes. Either a very short path or a start value past the last allocation.
+- `rc == 1`: target raised an exception (usually `MemoryError`) and Python exited cleanly. **This is the safe path.**
+- `rc == 139`: SIGSEGV exit code via shell convention (128 + 11). Unchecked allocation, NULL deref.
+- `rc == 134`: SIGABRT (128 + 6). Often `assert()` failure or CPython's debug-build assertions (`Py_FatalError`, `_PyObject_AssertFailed`).
+- `rc < 0`: Python `subprocess` returns negative exit codes for signal-killed children (e.g. `-11` for SIGSEGV, `-6` for SIGABRT). Depending on platform and shell, the same crash shows as `139` or `-11`.
+
+**How it works**: `_testcapi.set_nomemory(n, 0)` installs a custom memory allocator that lets the first `n` allocations succeed, then returns NULL for all subsequent ones. It systematically tests every allocation point in the code path. When an unchecked allocation fails, the NULL return is dereferenced, causing a segfault.
+
+**Requirements**: CPython with `_testcapi` module (standard in CPython builds, not available in all distributions — check with `import _testcapi; _testcapi.set_nomemory`). `_testcapi` is disabled in stripped production builds and in some distro packages.
+
+**Confirmed on**:
+- traits (`get_trait` unchecked `PyType_GenericAlloc` — segfault, dense sweep)
+- wrapt v1 (Finding 7: unchecked `PyDict_New` in `WraptObjectProxy_new` — dense sweep)
+- wrapt v2 (Findings #29, #41 reproduced via dense sweeps under set_nomemory in re-audit 2026-04-12)
+
+**Collateral finding surfaced by this technique**: dense sweep of `import wrapt._wrappers` discovered a segfault at `start=47`, initially thought to be in `_distutils_hack.DistutilsMetaFinder.find_spec` (setuptools) based on the faulthandler traceback, with C stack in `PyTuple_Pack+0x115`. Narrowing the reproducer to 11 lines with zero third-party dependencies pinned the real root cause to a missing NULL check in CPython's `_PyFrame_GetLocals` at `Objects/frameobject.c:2290` — a PEP 667 `locals()` fast path that fails to handle `_PyFrame_GetFrameObject` returning NULL under OOM. Tracked as [gh-146092](https://github.com/python/cpython/issues/146092), reported via `cpython-review-toolkit`, fixed upstream in main/3.14/3.13 on 2026-03-18 by commit `e1e4852133e` (PR #146124). The setuptools attribution was a red herring: the `.format(**locals())` line of `_distutils_hack` happened to be the first `locals()` call in the import dispatch path, so that's where `faulthandler` reported it — but any `locals()` call under OOM in an affected CPython build crashes identically.
 
 ---
 
@@ -625,10 +710,12 @@ Pattern 2 is the most powerful for C++ extensions: the first successful read sta
 | 15. Buffer abuse | Buffer lifecycle bugs | Custom buffer | Hard |
 | 16. Refleak measurement | Reference count bugs | sys.getrefcount | Easy |
 | 17. Memleak measurement | Memory leaks | tracemalloc | Easy |
-| 18. OOM injection | Unchecked allocations, NULL deref on OOM | _testcapi | Easy |
+| 18. OOM injection (pymalloc) | Unchecked allocations in Python allocator hierarchy | `_testcapi.set_nomemory` | Easy |
 | 19. Stateful metaclass hash | PyDict_GetItem swallows errors on type-keyed lookups | Metaclass | Medium |
 | 20. str subclass in sys.modules | PyDict_GetItem error injection + compound NULL bugs | str subclass | Hard |
 | 21. Mischievous file-like objects | I/O error handling, mid-parse exception swallowing | Custom class | Easy |
+| 22. Callback modifying caller state | Double-free / UAF via user-callback state mutation | Custom callback | Hard |
+| 23. System-malloc failure injection | Unchecked `malloc`/`calloc`/`realloc` in extensions or foreign C libs | libfiu + LD_PRELOAD | Medium |
 
 ---
 
@@ -685,3 +772,92 @@ c_enc(Evil(), 0)
 4. Performs cleanup (DECREF, dict removal) based on that assumption
 
 First confirmed on: simplejson `encoder_listencode_obj` double-XDECREF on `ident` (Finding 14).
+
+---
+
+## Technique 23: System-malloc failure injection via libfiu
+
+**Triggers**: Unchecked return from `malloc`/`calloc`/`realloc` inside any C code that runs in the Python process — including CPython stdlib extensions, third-party extensions, and any foreign C libraries they link against (libzstd, HDF5, libssl, ICU, libxml2, etc.). Complements Technique 18 which only reaches Python's own allocator hierarchy (`PyMem_Malloc`, `PyObject_Malloc`).
+
+**Bug class**: Extension code (or a foreign C library it calls) allocates via system malloc and either (a) fails to check the return value, or (b) has a partially-implemented error path that crashes on NULL, or (c) treats OOM as a recoverable condition but leaks/corrupts state on the way out. `_testcapi.set_nomemory` cannot reach these sites because it only hooks `PYMEM_DOMAIN_RAW`.
+
+**How it works**: [libfiu](https://blitiri.com.ar/p/libfiu) (public domain) is an LD_PRELOAD-based fault injection library. Its `fiu_posix_preload.so` interposes `malloc`, `calloc`, `realloc`, `mmap`, `open`, `read`, `write`, and ~50 other POSIX functions. At runtime, failure points can be enabled and disabled from Python via the `fiu` bindings. Failure points have names like `libc/mm/malloc`, `posix/mm/mmap`, `posix/io/oc/open`, etc. The control API offers four targeting modes:
+
+- **Unconditional**: `fiu.enable("libc/mm/malloc")` — every call fails until disabled.
+- **Probabilistic**: `fiu.enable_random("libc/mm/malloc", probability=0.05)` — 5% chance per call, for chaos testing.
+- **External callback**: `fiu.enable_external("libc/mm/malloc", cb)` — arbitrary Python predicate per call (fail the Nth, fail after a flag, count-and-decide, etc.).
+- **Call-site-specific**: `fiu.enable_stack_by_name("libc/mm/malloc", func_name="ZSTD_createCCtx")` — only fail when the named C function is on the call stack. Uses `backtrace()` + `dlsym()`, so the target function must be in the dynamic symbol table.
+
+### Setup
+
+1. Clone and build libfiu with a local prefix (no sudo needed):
+    ```
+    cd ~/projects && git clone https://blitiri.com.ar/repos/libfiu
+    cd libfiu && make PREFIX=$HOME/projects/libfiu/install
+    make install PREFIX=$HOME/projects/libfiu/install
+    ```
+2. Build the Python bindings inside the venv:
+    ```
+    source ~/venvs/your-venv/bin/activate
+    cd bindings/python
+    LDFLAGS="-L$HOME/projects/libfiu/install/lib -Wl,-rpath,$HOME/projects/libfiu/install/lib" \
+    CPPFLAGS="-I$HOME/projects/libfiu/install/include" \
+    python setup.py install
+    ```
+3. Set `LD_LIBRARY_PATH` + `LD_PRELOAD` before running Python:
+    ```
+    export LD_LIBRARY_PATH=$HOME/projects/libfiu/install/lib
+    export LD_PRELOAD=$HOME/projects/libfiu/install/lib/fiu_run_preload.so:$HOME/projects/libfiu/install/lib/fiu_posix_preload.so
+    ```
+   Or wrap the invocation with `fiu-run -x` which sets these for you.
+
+### Usage
+
+Use the scoped helpers in `docs/libfiu_helpers.py` (the catalog's companion module) rather than raw `fiu.enable()` — the bare API is a footgun because an unconditional enable under `PYTHONMALLOC=malloc` can brick the interpreter (even `fiu.disable()` needs to allocate).
+
+```python
+import libfiu_helpers as fh
+import compression.zstd as czstd
+
+fh.require_preloaded()
+fh.promote_to_global("libzstd.so.1")  # needed for call-site targeting
+
+# Fail ONLY the malloc inside ZSTD_createCCtx, nothing else.
+with fh.from_stack_of("libc/mm/malloc", func_name="ZSTD_createCCtx"):
+    try:
+        czstd.ZstdCompressor()
+    except czstd.ZstdError as e:
+        print(f"Error path fired cleanly: {e}")
+        # -> "Unable to create ZSTD_CCtx instance."
+```
+
+Or for coarser targeting via a counting predicate:
+
+```python
+# Fail the 3rd malloc inside the protected region.
+with fh.nth_allocation("libc/mm/malloc", n=3) as state:
+    some_function_that_allocates_multiple_times()
+assert state["failed_at"] == [3]
+```
+
+### Gotchas
+
+1. **`ctypes.CDLL("libc.so.6")` bypasses LD_PRELOAD.** Explicit `dlopen` of a named library gets a direct handle to that library; `dlsym()` on that handle returns the real symbol, not the preloaded interposition. Use `ctypes.CDLL(None)` (RTLD_DEFAULT) when you want the preload chain to win.
+
+2. **Pymalloc pool allocations bypass `libc/mm/malloc`.** For Python objects ≤ 512 bytes, pymalloc serves them from arena pools without calling `malloc`. Larger objects fall through to the raw allocator and ARE intercepted. If you need to reach all Python allocations (including small ones), set `PYTHONMALLOC=malloc` — but see gotcha 3.
+
+3. **Unconditional `enable` under `PYTHONMALLOC=malloc` bricks the interpreter.** Every subsequent malloc fails, including the allocation that `fiu.disable()` itself needs. Symptom: "MemoryError (no message)" followed by "lost sys.stderr". **Always** use one of the scoped helpers (`nth_allocation`, `enable_if`, `from_stack_of`) or `FIU_ONETIME`, never bare `fiu.enable()`.
+
+4. **Extension modules are loaded with `RTLD_LOCAL` by default.** That means symbols from shared libraries they link against (like libzstd) are NOT visible to `dlsym(RTLD_DEFAULT, ...)`. Before using `from_stack_of` against a symbol in one of those libraries, call `fh.promote_to_global("libzstd.so.1")` to explicitly dlopen the library with `RTLD_GLOBAL`. Do this BEFORE importing the extension module.
+
+5. **Inlined / hidden-visibility functions don't show up on the backtrace.** `from_stack_of` walks glibc's `backtrace()`, which skips `static inline` functions and functions built with `-fvisibility=hidden`. Most CPython-internal functions (`PyEval_*`, `_PyObject_*`) are exported, so targeting works. For third-party extensions, check with `nm` or `objdump -T` that the symbol is present in `.dynsym`.
+
+6. **`ctypes.CDLL("libzstd.so.1", mode=ctypes.RTLD_GLOBAL)` must happen before the extension that uses libzstd is imported** — otherwise the first import wins with `RTLD_LOCAL` and the global promotion has no effect on symbol resolution for that library. The `promote_to_global` helper is just a one-liner reminder; the real work is the import-order discipline.
+
+7. **`fiu-run -x -c 'enable name=X'` vs raw LD_PRELOAD**: `fiu-run` is a thin bash wrapper that sets `LD_PRELOAD`, `FIU_ENABLE`, and `FIU_CTRL_FIFO` env vars. It's convenient for one-shots; raw LD_PRELOAD is better for test harnesses where env setup is amortized across many runs.
+
+8. **`fiu-ctrl -c 'enable ...' <pid>` works for remote control** over a named pipe, but the target must either be launched via `fiu-run` (which opens the pipe) or call `fiu.rc_fifo(path_prefix)` from inside the target process. Useful for long-lived servers where you want to toggle failure injection without restarting.
+
+**Confirmed on**:
+- CPython 3.14 `_zstd` extension + `libzstd.so.1` — validated that `from_stack_of("libc/mm/malloc", func_name="ZSTD_createCCtx")` surgically fails one malloc inside libzstd and CPython raises `ZstdError: Unable to create ZSTD_CCtx instance.` with no segfault, no leaked state, and no collateral on surrounding allocations. Full reproducer: `t6_zstd_validation.py` (see `docs/libfiu_helpers.py` usage example).
+

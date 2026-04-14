@@ -69,5 +69,135 @@
     "PyTuple_SetItem", "PyTuple_SET_ITEM",
     "PyModule_AddObject",
     "PyCell_SET"
-  ]
+  ],
+  "no_exception_apis": {
+    "_comment": [
+      "CPython APIs (functions and macros) that CANNOT set a Python exception under any circumstances.",
+      "Calling these in an error-handling block cannot clobber the pending exception.",
+      "Used by scan_error_paths.py::_check_exception_clobbering as an allowlist.",
+      "This is a broader concept than non_erroring_int_apis below: it includes refcount macros,",
+      "type-check macros, and exception-inspection APIs that are not int-returning.",
+      "Entries here should be minimal; use non_erroring_int_apis below for the detailed metadata",
+      "entries that are also consulted by error-path-analyzer agent guidance."
+    ],
+    "refcount_macros": [
+      "Py_INCREF", "Py_XINCREF",
+      "Py_REFCNT", "Py_SET_REFCNT"
+    ],
+    "type_access_macros": [
+      "Py_TYPE", "Py_SET_TYPE",
+      "Py_SIZE", "Py_SET_SIZE",
+      "Py_IS_TYPE"
+    ],
+    "type_check_macros": [
+      "PyType_Check", "PyType_CheckExact",
+      "PyUnicode_Check", "PyUnicode_CheckExact",
+      "PyBytes_Check", "PyBytes_CheckExact",
+      "PyByteArray_Check", "PyByteArray_CheckExact",
+      "PyList_Check", "PyList_CheckExact",
+      "PyTuple_Check", "PyTuple_CheckExact",
+      "PyDict_Check", "PyDict_CheckExact",
+      "PySet_Check", "PyFrozenSet_Check",
+      "PyLong_Check", "PyLong_CheckExact",
+      "PyFloat_Check", "PyFloat_CheckExact",
+      "PyComplex_Check", "PyComplex_CheckExact",
+      "PyFunction_Check", "PyMethod_Check",
+      "PyCFunction_Check", "PyCFunction_CheckExact",
+      "PyModule_Check", "PyModule_CheckExact",
+      "PyCode_Check",
+      "PyInstanceMethod_Check",
+      "PySlice_Check",
+      "PyCapsule_CheckExact",
+      "PyGen_Check", "PyGen_CheckExact",
+      "PyCoro_CheckExact",
+      "PyAsyncGen_CheckExact",
+      "PyWeakref_Check", "PyWeakref_CheckProxy", "PyWeakref_CheckRef",
+      "PyObject_TypeCheck",
+      "PyCallable_Check",
+      "PyIndex_Check",
+      "PyNumber_Check",
+      "PyMapping_Check",
+      "PySequence_Check",
+      "PyBuffer_Check",
+      "PyIter_Check",
+      "PyAIter_Check"
+    ],
+    "exception_inspection": [
+      "PyErr_Occurred",
+      "PyErr_ExceptionMatches",
+      "PyErr_GivenExceptionMatches"
+    ],
+    "exception_state_management": [
+      "PyErr_Fetch",
+      "PyErr_Restore",
+      "PyErr_GetRaisedException",
+      "PyErr_SetRaisedException",
+      "PyErr_NormalizeException"
+    ],
+    "gc_tracking": [
+      "PyObject_GC_Track",
+      "PyObject_GC_UnTrack",
+      "PyObject_GC_IsTracked",
+      "PyObject_GC_IsFinalized"
+    ],
+    "_notes": {
+      "PyErr_Clear": [
+        "Deliberately excluded from this list: PyErr_Clear IS what the",
+        "pyerr-clear-auditor check is for. Finding PyErr_Clear inside an error",
+        "block is a legitimate question ('is this clear guarded?') handled by",
+        "scan_pyerr_clear.py. Excluding it from _check_exception_clobbering",
+        "would just make the two scripts diverge. Let the clobber check surface",
+        "it; the pyerr-clear-auditor then reviews whether it's guarded."
+      ],
+      "Py_DECREF_Py_XDECREF_Py_CLEAR": [
+        "Already filtered in scan_error_paths.py::_CLEANUP_APIS.",
+        "Do not duplicate here."
+      ]
+    }
+  },
+  "non_erroring_int_apis": {
+    "_comment": [
+      "Int-returning CPython APIs whose header explicitly documents that they do not raise exceptions.",
+      "Their return value is NOT an error indicator: -1 is a comparison result or flag, not an error.",
+      "Do NOT flag unchecked use of these APIs as 'missing error check'.",
+      "Do NOT flag calls to these APIs in error-handling blocks as 'exception clobbering'.",
+      "When adding to this list, cite the header file and line where 'does not raise exceptions' is documented.",
+      "A subset of no_exception_apis above, kept separate for the error-path-analyzer agent's int-return guidance."
+    ],
+    "PyUnicode_CompareWithASCIIString": {
+      "header": "Include/unicodeobject.h:957",
+      "docstring": "This function does not raise exceptions.",
+      "return_semantics": "strcmp-style: -1 (uni < str), 0 (equal), 1 (uni > str). Never an error.",
+      "confirmed_via": "wrapt v2 re-audit 2026-04-12 (reports/wrapt_report_v2.md findings #19, #33 reclassified as false positives)"
+    },
+    "PyUnicode_Tailmatch": {
+      "header": "Include/cpython/unicodeobject.h",
+      "docstring": "Returns 1/0 on match/no-match. Returns -1 on error (but only if the substring is invalid UTF-8, which is unusual).",
+      "return_semantics": "1 (match), 0 (no match), -1 (invalid input only). Treat -1 as a rare error but not a runtime allocation failure.",
+      "note": "This is NOT the same as PyUnicode_CompareWithASCIIString — Tailmatch CAN return -1 as an error. Kept here for reference; flag its usage only when an unchecked -1 could actually propagate."
+    },
+    "Py_IS_TYPE": {
+      "header": "Include/object.h",
+      "docstring": "Macro that wraps Py_TYPE comparison. Never fails.",
+      "return_semantics": "1 (is instance) or 0 (not). No error path."
+    },
+    "PyObject_TypeCheck": {
+      "header": "Include/object.h",
+      "docstring": "Macro: Py_IS_TYPE(obj, type) || PyType_IsSubtype(Py_TYPE(obj), type).",
+      "return_semantics": "1 or 0. The embedded PyType_IsSubtype call cannot raise because it only walks the MRO.",
+      "note": "Technically can recurse into PyType_IsSubtype which is infallible for heap types with a tp_mro set at type-creation time."
+    },
+    "PyIndex_Check": {
+      "header": "Include/cpython/abstract.h",
+      "return_semantics": "1 if the object supports __index__, 0 otherwise. No error path."
+    },
+    "PyCallable_Check": {
+      "header": "Include/object.h",
+      "return_semantics": "1 if the object is callable, 0 otherwise. No error path."
+    },
+    "PyNumber_Check": {
+      "header": "Include/abstract.h",
+      "return_semantics": "1 if the object supports the number protocol, 0 otherwise. No error path."
+    }
+  }
 }

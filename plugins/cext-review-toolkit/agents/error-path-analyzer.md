@@ -89,6 +89,16 @@ Review for patterns the script may miss:
 
 6. **Incorrect error check for int-returning APIs**: APIs like `PyDict_SetItem`, `PyList_Append`, `PyObject_SetAttrString` return `-1` on error, not `NULL`. Verify error checks use `== -1` or `< 0`, not `== NULL`.
 
+7. **Int-returning APIs that CANNOT raise exceptions**: Not every int-returning CPython API uses `-1` as an error signal. Some are documented to never raise — their `-1` is a comparison result (strcmp-style) or a flag, not an error indicator. Before flagging unchecked `== 0` / `== -1` / `!= 0` checks on such APIs as buggy, consult `data/api_tables.json` `non_erroring_int_apis` and verify the CPython header's documented contract. Headers that say "This function does not raise exceptions" settle the question conclusively.
+
+   **Known non-erroring int APIs** (authoritative list in `data/api_tables.json`):
+   - `PyUnicode_CompareWithASCIIString` — `Include/unicodeobject.h:957` — strcmp-style `-1`/`0`/`1`
+   - `Py_IS_TYPE`, `PyObject_TypeCheck`, `PyIndex_Check`, `PyCallable_Check`, `PyNumber_Check` — all `1`/`0`, no error path
+
+   **Historical false positive**: wrapt v2 findings #19 and #33 flagged 11 sites of `PyUnicode_CompareWithASCIIString(x, "...") == 0` as "error (-1) treated as 0 (equal)". The CPython header explicitly states "This function does not raise exceptions." The `-1` return is a valid comparison result meaning "less than", which correctly falls through as "not equal" under the `== 0` check. All 11 sites were safe. Do not repeat this mistake — always cross-check the header before classifying.
+
+   **How to cross-check**: read the function's declaration in CPython's `Include/` directory. Look for the sentence "does not raise exceptions" in the preceding comment block, OR trace the function body in `Objects/*.c` / `Python/*.c` for any `PyErr_Set*` call. Absence of any exception-setting call in the function AND its transitive callees means -1 is not an error signal.
+
 ## Output Format
 
 For each confirmed or likely finding, produce a structured entry:

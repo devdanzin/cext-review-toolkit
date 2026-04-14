@@ -124,6 +124,23 @@ Review for issues beyond individual slots:
    - Is `Py_TPFLAGS_DEFAULT` included in the flags?
    - Is `PyType_FromModuleAndSpec` used instead of `PyType_FromSpec` when module state access is needed?
 
+5. **Claims of "slot not effective" REQUIRE live behavioral verification.** Before flagging a custom slot (`tp_setattro`, `tp_getattro`, `tp_iter`, `tp_call`, etc.) as "declared but not wired" or "regressed to the base class", verify with a **live behavioral test**. Python-level descriptor identity and dict-membership checks are unreliable signals:
+
+   - `SubType.__setattr__ is BaseType.__setattr__` can evaluate to `True` even when `tp_setattro` is genuinely distinct, because Python caches slot wrappers and may return equivalent objects for distinct underlying slots.
+   - `'method_name' in Type.__dict__` can return False even when the method is wired via `tp_methods`, because the class dict is populated lazily with version-dependent caching.
+
+   **Required verification pattern**: instantiate the type, call the slot directly or via its dunder alias, observe the state change (or lack thereof), and classify based on actual behavior. For example, to verify that `BoundFunctionWrapper`'s `tp_setattro` routes `_self_*` attributes to the parent:
+
+   ```python
+   bfw = ...  # obtain bound wrapper
+   bfw._self_foo = "canary"
+   assert parent._self_foo == "canary"  # live test
+   ```
+
+   If the assertion holds, the slot IS effective — classify as ACCEPTABLE regardless of what descriptor identity comparisons show. If it fails, the slot IS regressed — classify as FIX.
+
+   **Historical false positives**: wrapt v2 findings #10 and #11 flagged `BoundFunctionWrapper.__setattr__` and `BoundFunctionWrapper.__getattr__` as slot regressions based on `is` and `in __dict__` checks alone. Direct behavioral verification showed both slots were effective; both findings were falsified. Don't repeat the mistake — static inspection is **necessary but not sufficient** for classifying slot regressions. Require a live behavioral test.
+
 ## Output Format
 
 For each confirmed or likely finding, produce a structured entry:
