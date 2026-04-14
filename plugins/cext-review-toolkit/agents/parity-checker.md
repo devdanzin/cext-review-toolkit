@@ -81,6 +81,28 @@ For each high-priority paired function, compare:
 - Are default values the same?
 - Does one return None where the other returns an empty container?
 
+### Phase 3a: Slot-Regression Claims MUST Use Behavioral Verification
+
+Before claiming that a C extension type's custom slot (`tp_setattro`, `tp_getattro`, `tp_iter`, `tp_call`, etc.) is "not effective" or "regressed to the base class", verify with a **live behavioral test**. Python-level descriptor identity checks are unreliable:
+
+- `SubType.__setattr__ is BaseType.__setattr__` can evaluate to `True` even when `tp_setattro` is genuinely different, because Python's type system caches slot wrappers and may return equivalent objects for distinct slots.
+- Slot wrapper objects are reconstructed lazily from the `tp_*` function pointers, and two types whose tp_setattro differ may still produce `is`-equal wrapper objects in some CPython versions.
+- Absence of a method in `type.__dict__` does not mean the slot is unset — `tp_methods` are merged into the dict lazily and with version-dependent caching.
+
+**The only reliable verification is to trigger the slot and observe the behavior.** For example, to verify that `BoundFunctionWrapper`'s custom `tp_setattro` is effective:
+
+```python
+fw = wrapt.FunctionWrapper(some_function, some_wrapper)
+bfw = fw.__get__(some_instance, type(some_instance))   # produce bound form
+bfw._self_foo = "canary"
+# If the custom setattro is effective, it forwards to the parent:
+assert fw._self_foo == "canary", "custom setattro regressed"
+```
+
+If the live test passes, the slot IS effective regardless of what descriptor identity comparisons say. Classification: ACCEPTABLE. If the live test fails (the assertion fires or the attribute lands on the wrong object), the slot IS regressed. Classification: FIX.
+
+**Historical false positives**: wrapt v2 findings #10 and #11 flagged `BoundFunctionWrapper.__setattr__` and `BoundFunctionWrapper.__getattr__` as "slot regressions" based on `BFW.__setattr__ is ObjectProxy.__setattr__` → True and `'__getattr__' in BoundFunctionWrapper.__dict__` → False. Direct behavioral verification showed the setattro slot WAS distinct (forwarding worked correctly) and `__getattr__` WAS in the class dict. Both findings were falsified during the v2 appendix pass. Do not repeat this mistake — identity checks and dict-membership checks are **necessary but not sufficient**. Require a live behavioral test before classifying FIX.
+
 ### Phase 3b: Python Wrapper `__new__`-Without-`__init__` Safety
 
 Check for Python classes that wrap C extension types and break when `__new__` is called without `__init__`. This is a cross-language parity gap: the C `tp_new` creates a valid C object, but the Python wrapper's methods assume `__init__` ran.

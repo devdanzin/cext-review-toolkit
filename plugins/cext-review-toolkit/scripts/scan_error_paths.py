@@ -213,6 +213,13 @@ def _check_exception_clobbering(func, source_bytes, api_tables):
     findings = []
     body = func["body_node"]
 
+    # APIs that cannot raise exceptions cannot clobber a pending exception.
+    # See data/api_tables.json 'no_exception_apis' (broader set including
+    # refcount macros, type-check macros, exception inspection) and
+    # 'non_erroring_int_apis' (int-returning non-erroring functions with
+    # detailed metadata). Both are consulted here.
+    cannot_clobber = _apis_that_cannot_clobber(api_tables)
+
     # Look for if-blocks that check for NULL (error detection),
     # then call non-cleanup Python APIs before returning.
     for if_node in walk_descendants(body, "if_statement"):
@@ -237,6 +244,11 @@ def _check_exception_clobbering(func, source_bytes, api_tables):
             fn = call["function_name"]
             if fn in _CLEANUP_APIS or fn in _PYERR_SET_APIS:
                 continue
+            if fn in cannot_clobber:
+                # Documented non-raising APIs (refcount macros, type-check
+                # macros, exception inspection, non-erroring int APIs) cannot
+                # clobber the pending exception.
+                continue
             if fn.startswith("Py") or fn.startswith("_Py"):
                 # Non-cleanup, non-error-setting Python API in error path.
                 findings.append(
@@ -257,6 +269,51 @@ def _check_exception_clobbering(func, source_bytes, api_tables):
                 )
 
     return findings
+
+
+def _apis_that_cannot_clobber(api_tables: dict) -> set[str]:
+    """Extract the full set of APIs that cannot clobber a pending exception.
+
+    Merges two sources from api_tables:
+    - 'no_exception_apis': category-grouped lists (refcount_macros,
+      type_access_macros, type_check_macros, exception_inspection).
+    - 'non_erroring_int_apis': detailed-metadata dict of int-returning APIs
+      documented not to raise.
+
+    Returns a set for O(1) membership checks. Entries whose key starts with
+    '_' (like '_comment' / '_notes') are skipped.
+    """
+    names: set[str] = set()
+
+    # Broader no-exception list: category groups of API names.
+    for category, entries in api_tables.get("no_exception_apis", {}).items():
+        if category.startswith("_"):
+            continue
+        if isinstance(entries, list):
+            names.update(entries)
+        elif isinstance(entries, dict):
+            names.update(k for k in entries if not k.startswith("_"))
+
+    # Narrower int-returning list: dict of name → metadata.
+    names.update(
+        k for k in api_tables.get("non_erroring_int_apis", {})
+        if not k.startswith("_")
+    )
+
+    return names
+
+
+# Backward-compatibility alias for the original narrow helper. Kept because
+# external callers or tests may import it by name.
+def _non_erroring_int_apis(api_tables: dict) -> set[str]:
+    """Return only the int-returning non-erroring APIs (narrow subset).
+
+    Prefer `_apis_that_cannot_clobber` for the broader filter used by
+    `_check_exception_clobbering`. This narrower view exists for callers
+    that specifically need the int-returning subset.
+    """
+    entries = api_tables.get("non_erroring_int_apis", {})
+    return {name for name in entries if not name.startswith("_")}
 
 
 def _check_unchecked_pyarg_parse(func, source_bytes, api_tables):
