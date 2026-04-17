@@ -208,3 +208,18 @@ After all findings, include a summary:
 8. **Verify deprecation claims against documentation.** Do not infer deprecation from nearby functions or from the existence of a replacement API. Only flag an API as deprecated if the CPython documentation explicitly states it, or if it appears in `data/deprecated_apis.json`. For example, `PySys_GetObject` is NOT deprecated even though `PySys_GetAttr` was added in 3.13 — they coexist.
 
 9. **Suggest code removal, not just replacement.** Check `data/deprecated_apis.json` `code_removal_opportunities` section. When the extension's minimum Python version supports a consolidating API (e.g., `PyModule_AddType` on 3.10+), report how many lines of boilerplate could be deleted. Maintainers prefer removing code over adding code. Example: "19 type registrations using `PyType_FromSpec` + `PyType_Ready` + `Py_INCREF` + `PyModule_AddObject` could each be replaced by a single `PyModule_AddType` call, removing ~100 lines."
+
+## Running the script
+
+- Call the script with a Bash timeout of **300000 ms** (5 min). The default 120s kills on large repos.
+- Use a **unique temp filename** for the JSON output, e.g. `/tmp/version-compat-scanner_<scope>_$$.json` -- the `$$` PID suffix prevents collisions when multiple agents run concurrently.
+- Forward `--max-files N` and (where supported) `--workers N` from the caller.
+- If the script **times out or errors, do NOT retry it.** Fall back to Grep/Read for the same question. Long-running runs should use `run_in_background`.
+
+## Confidence
+
+- **HIGH** -- structurally identical to a known-bad pattern, or exact signature match; >=90% likelihood of being a true positive.
+- **MEDIUM** -- similar with differences that require human verification; 70-89%.
+- **LOW** -- superficially similar; requires code-context reading; 50-69%.
+
+Findings below LOW are not reported.

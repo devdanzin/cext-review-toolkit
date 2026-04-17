@@ -162,3 +162,18 @@ Common fix patterns:
 5. **Cross-reference with error-path-analyzer.** If that agent also flagged exception handling issues, merge the findings. The error-path-analyzer catches exception clobbering; this agent catches exception swallowing.
 
 6. **Recognize intentional fallback patterns.** When `PyErr_Clear()` follows a failed `PyImport_ImportModule` or `PyObject_GetAttrString` and the code continues with a fallback/default value (e.g., optional import of `_testinternalcapi`), classify as CONSIDER (intentional fallback) rather than FIX. Note that guarding with `PyErr_ExceptionMatches(PyExc_ImportError)` would be more precise but is not required for this pattern.
+
+## Running the script
+
+- Call the script with a Bash timeout of **300000 ms** (5 min). The default 120s kills on large repos.
+- Use a **unique temp filename** for the JSON output, e.g. `/tmp/pyerr-clear-auditor_<scope>_$$.json` -- the `$$` PID suffix prevents collisions when multiple agents run concurrently.
+- Forward `--max-files N` and (where supported) `--workers N` from the caller.
+- If the script **times out or errors, do NOT retry it.** Fall back to Grep/Read for the same question. Long-running runs should use `run_in_background`.
+
+## Confidence
+
+- **HIGH** -- structurally identical to a known-bad pattern, or exact signature match; >=90% likelihood of being a true positive.
+- **MEDIUM** -- similar with differences that require human verification; 70-89%.
+- **LOW** -- superficially similar; requires code-context reading; 50-69%.
+
+Findings below LOW are not reported.

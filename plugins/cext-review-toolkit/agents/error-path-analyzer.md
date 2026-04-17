@@ -159,3 +159,18 @@ If external tools are available:
 7. **Recognize sentinel/vtable error propagation patterns.** Some extensions use sentinel objects (e.g., an `xt_error` struct with error-returning methods) to handle errors via vtable dispatch. When the error-setting function is called immediately before the sentinel method with no intervening Python API calls, the exception is still pending — this is not a "NULL without exception" bug. Only flag if there are intervening calls that could clear the exception.
 
 8. **Recognize defensive visitor/callback patterns.** When a function passes potentially-NULL values to a callback/visitor, check if all known visitors handle NULL defensively (e.g., checking their arguments, recording errors in a "sticky error" field in the callback arg struct). If the protocol is designed for defensive callbacks, classify as CONSIDER rather than FIX.
+
+## Running the script
+
+- Call the script with a Bash timeout of **300000 ms** (5 min). The default 120s kills on large repos.
+- Use a **unique temp filename** for the JSON output, e.g. `/tmp/error-path-analyzer_<scope>_$$.json` -- the `$$` PID suffix prevents collisions when multiple agents run concurrently.
+- Forward `--max-files N` and (where supported) `--workers N` from the caller.
+- If the script **times out or errors, do NOT retry it.** Fall back to Grep/Read for the same question. Long-running runs should use `run_in_background`.
+
+## Confidence
+
+- **HIGH** -- structurally identical to a known-bad pattern, or exact signature match; >=90% likelihood of being a true positive.
+- **MEDIUM** -- similar with differences that require human verification; 70-89%.
+- **LOW** -- superficially similar; requires code-context reading; 50-69%.
+
+Findings below LOW are not reported.

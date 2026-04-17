@@ -156,3 +156,11 @@ After all findings, include a summary:
 6. **The limited API version sets the floor.** If `Py_LIMITED_API = 0x03090000`, the extension cannot use ANY API added in 3.10+. Verify every API call against the version table.
 
 7. **Report at most 20 individual findings.** For large codebases with many violations, group by category and report counts, with detailed findings for the most significant ones.
+
+## Confidence
+
+- **HIGH** -- structurally identical to a known-bad pattern, or exact signature match; >=90% likelihood of being a true positive.
+- **MEDIUM** -- similar with differences that require human verification; 70-89%.
+- **LOW** -- superficially similar; requires code-context reading; 50-69%.
+
+Findings below LOW are not reported.
