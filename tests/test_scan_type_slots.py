@@ -154,6 +154,9 @@ class TestScanTypeSlots(unittest.TestCase):
             result = type_slots.analyze(str(root / "typed.c"))
             self.assertIn("findings", result)
             self.assertIn("summary", result)
+            # Envelope sanity: data files loaded + at least one function seen.
+            self.assertIn("functions_analyzed", result)
+            self.assertGreaterEqual(result["functions_analyzed"], 1)
 
 
 TYPE_SPEC_SENTINEL_ZERO = """\
