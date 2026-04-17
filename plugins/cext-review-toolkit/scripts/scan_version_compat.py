@@ -25,11 +25,16 @@ _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 def _load_deprecated_apis() -> dict:
     """Load deprecated/removed API data."""
+    path = _DATA_DIR / "deprecated_apis.json"
     try:
-        with open(_DATA_DIR / "deprecated_apis.json", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        print(json.dumps({"error": f"Failed to load deprecated_apis.json: {e}"}))
+        print(f"WARNING: Failed to load {path}: {e}", file=sys.stderr)
+        print(
+            json.dumps({"error": f"Failed to load deprecated_apis.json: {e}"}),
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 
