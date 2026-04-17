@@ -114,6 +114,32 @@ class TestAnalyzeHistory(unittest.TestCase):
         self.assertEqual(commits, [])
         self.assertEqual(file_stats, [])
 
+    def test_workers_arg_parsed(self):
+        """--workers N is parsed into args['workers']."""
+        args = history.parse_args(["--workers", "16", "some/path"])
+        self.assertEqual(args["workers"], 16)
+        self.assertEqual(args["path"], "some/path")
+
+    def test_workers_default(self):
+        """Default workers count is 8."""
+        args = history.parse_args([])
+        self.assertEqual(args["workers"], 8)
+
+    def test_workers_invalid_value(self):
+        """Non-integer --workers triggers SystemExit."""
+        with self.assertRaises(SystemExit):
+            history.parse_args(["--workers", "abc"])
+
+    def test_analyze_with_workers_smoke(self):
+        """analyze runs with --workers and returns without hanging."""
+        with TempExtension({"myext.c": MINIMAL_EXTENSION}, init_git=True) as root:
+            _make_commit(root, "fix: thing", {"myext.c": MINIMAL_EXTENSION + "\n"})
+            result = history.analyze(
+                [str(root), "--last", "5", "--workers", "2"]
+            )
+            self.assertNotIn("error", result)
+            self.assertIn("summary", result)
+
     def test_parse_git_log_binary_file(self):
         """parse_git_log handles binary file lines (added/removed are '-')."""
         lines = [
