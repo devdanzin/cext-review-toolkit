@@ -38,7 +38,38 @@ The script produces structured output with:
 
 Review the output and focus on `recent_fixes` first (highest value for finding similar bugs), then `file_churn` and `function_churn` for the risk matrix.
 
-### Phase 2: Similar Bug Detection (Highest Value)
+**Effort allocation**: 60% similar-bug detection (Phase 3), 15% fix-completeness review (Phase 2), 25% churn-risk matrix + contextual observations (Phase 4+).
+
+### Phase 2: Fix Completeness Review
+
+Before searching for similar bugs elsewhere, check whether each fix is itself complete. C extensions use the same `goto`-cleanup patterns as CPython, so the same completeness gaps apply. For each recent fix commit (cap at 15):
+
+1. **Read the fix diff and commit message**: Understand what was reported broken and what the fix changes.
+
+2. **Check all code paths in the fixed function**:
+   - Does the fix cover all error branches? Many extension functions have multiple `goto error` / `goto done` / `goto cleanup` labels — a fix might patch one branch but miss another.
+   - Does the fix cover all `#ifdef` platform variants? A fix to the Unix code path may leave the `#ifdef MS_WINDOWS` (or `#ifdef Py_GIL_DISABLED`) path unfixed, or vice versa.
+   - Does the fix cover all affected variables? A refcount leak fix for `var_a` may leave `var_b` with the same leak pattern in the same function.
+
+3. **Check root cause vs. symptom**: Did the fix address the root cause, or did it patch the symptom? For example, adding a NULL check after an API call that shouldn't have returned NULL in the first place — was the real bug in the caller or the callee?
+
+4. **Check for regression risk**: Did the fix change a condition or code path that other callers depend on? Could the fix break something else?
+
+5. **Classify each fix**:
+   - **FIX** if the fix is demonstrably incomplete (missed cleanup label, missed platform variant, missed variable)
+   - **CONSIDER** if the fix might be incomplete but requires deeper analysis to confirm
+   - **ACCEPTABLE** if the fix appears complete and correct
+
+Output format for incomplete fixes:
+
+```
+#### [FIX] Incomplete fix in commit [SHA] — [title]
+**What was fixed**: [description]
+**What was missed**: [specific missed cleanup label, variable, or platform variant]
+**Evidence**: [line numbers, code snippet showing the unfixed path]
+```
+
+### Phase 3: Similar Bug Detection (Highest Value)
 
 This is the most valuable capability of this agent. For each recent fix commit:
 
@@ -72,7 +103,7 @@ This is the most valuable capability of this agent. For each recent fix commit:
 
 5. **Cap at 10 similar-bug findings**: If there are more, prioritize by confidence and severity. Note the total count.
 
-### Phase 3: Churn-Risk Matrix
+### Phase 4: Churn-Risk Matrix
 
 Combine churn data with quality signals:
 
@@ -93,7 +124,7 @@ Combine churn data with quality signals:
 
 4. **Cap at 10 risk matrix entries**: Focus on the highest-risk files/functions.
 
-### Phase 4: Contextual Observations
+### Phase 5: Contextual Observations
 
 Note any interesting patterns:
 
@@ -161,7 +192,7 @@ After all findings:
 
 ## Important Guidelines
 
-1. **Similar bug detection is the primary value.** Invest 70% of the analysis effort here. The churn matrix is secondary context.
+1. **Similar bug detection is the primary value.** Invest 60% of effort here, 15% on fix completeness (Phase 2), and 25% on churn matrix + contextual observations. The churn matrix is secondary context.
 
 2. **Function-level churn uses Tree-sitter for C files.** The script identifies function boundaries using Tree-sitter parsing, so function-level churn is reliable. Python files use AST parsing.
 
@@ -178,3 +209,18 @@ After all findings:
 8. **Do not overemphasize co-change coupling.** While interesting, co-change clusters are less actionable than similar bugs. Mention them in observations but do not dedicate detailed findings to them.
 
 9. **Do not emphasize new feature review.** This agent is for temporal analysis, not feature review. Feature commits are noted for context (fix-to-feature ratio) but not analyzed in detail.
+
+## Running the script
+
+- Call the script with a Bash timeout of **300000 ms** (5 min). The default 120s kills on large repos.
+- Use a **unique temp filename** for the JSON output, e.g. `/tmp/git-history-analyzer_<scope>_$$.json` -- the `$$` PID suffix prevents collisions when multiple agents run concurrently.
+- Forward `--max-files N` and (where supported) `--workers N` from the caller.
+- If the script **times out or errors, do NOT retry it.** Fall back to Grep/Read for the same question. Long-running runs should use `run_in_background`.
+
+## Confidence
+
+- **HIGH** -- structurally identical to a known-bad pattern, or exact signature match; >=90% likelihood of being a true positive.
+- **MEDIUM** -- similar with differences that require human verification; 70-89%.
+- **LOW** -- superficially similar; requires code-context reading; 50-69%.
+
+Findings below LOW are not reported.

@@ -194,3 +194,18 @@ For each confirmed or likely finding, produce a structured entry:
 5. **Static types and heap types have different lifecycles.** Static types live forever (one per process). Heap types are reference-counted and can be destroyed. Mixing the patterns (e.g., decrementing a static type) is a bug.
 
 6. **Report at most 20 findings across all types.** If the extension defines many types, summarize the common issues and provide detailed findings for the most critical ones.
+
+## Running the script
+
+- Call the script with a Bash timeout of **300000 ms** (5 min). The default 120s kills on large repos.
+- Use a **unique temp filename** for the JSON output, e.g. `/tmp/type-slot-checker_<scope>_$$.json` -- the `$$` PID suffix prevents collisions when multiple agents run concurrently.
+- Forward `--max-files N` and (where supported) `--workers N` from the caller.
+- If the script **times out or errors, do NOT retry it.** Fall back to Grep/Read for the same question. Long-running runs should use `run_in_background`.
+
+## Confidence
+
+- **HIGH** -- structurally identical to a known-bad pattern, or exact signature match; >=90% likelihood of being a true positive.
+- **MEDIUM** -- similar with differences that require human verification; 70-89%.
+- **LOW** -- superficially similar; requires code-context reading; 50-69%.
+
+Findings below LOW are not reported.

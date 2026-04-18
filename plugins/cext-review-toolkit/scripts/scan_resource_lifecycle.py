@@ -46,6 +46,7 @@ def _load_resource_pairs() -> dict[str, list[str]]:
         with open(pairs_file, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
+        print(f"WARNING: Failed to load {pairs_file}: {e}", file=sys.stderr)
         print(
             json.dumps({"error": f"Failed to load resource_pairs.json: {e}"}),
             file=sys.stderr,

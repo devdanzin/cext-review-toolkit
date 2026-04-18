@@ -119,3 +119,18 @@ For each confirmed or likely finding, produce a structured entry:
 8. **Report at most 20 findings.** If there are more, prioritize by severity and confidence. Mention the total count and note that lower-priority findings were omitted.
 
 9. **Borrowed refs from immutable containers are safe if the container is alive.** When a borrowed reference comes from `PyTuple_GetItem`/`PyTuple_GET_ITEM`, the tuple holds a strong reference to the item. Since tuples are immutable, no Python call can remove items from them. As long as the function holds a strong reference to the tuple (e.g., it's a function parameter or a local with Py_INCREF'd ownership), the borrowed ref is safe across intervening Python calls. Do NOT flag these as `borrowed_ref_across_call`. This does NOT apply to mutable containers like lists or dicts.
+
+## Running the script
+
+- Call the script with a Bash timeout of **300000 ms** (5 min). The default 120s kills on large repos.
+- Use a **unique temp filename** for the JSON output, e.g. `/tmp/refcount-auditor_<scope>_$$.json` -- the `$$` PID suffix prevents collisions when multiple agents run concurrently.
+- Forward `--max-files N` and (where supported) `--workers N` from the caller.
+- If the script **times out or errors, do NOT retry it.** Fall back to Grep/Read for the same question. Long-running runs should use `run_in_background`.
+
+## Confidence
+
+- **HIGH** -- structurally identical to a known-bad pattern, or exact signature match; >=90% likelihood of being a true positive.
+- **MEDIUM** -- similar with differences that require human verification; 70-89%.
+- **LOW** -- superficially similar; requires code-context reading; 50-69%.
+
+Findings below LOW are not reported.

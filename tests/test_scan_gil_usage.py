@@ -221,6 +221,9 @@ class TestScanGilUsage(unittest.TestCase):
             result = gil.analyze(str(root / "myext.c"))
             self.assertIn("findings", result)
             self.assertIn("summary", result)
+            # Envelope sanity: data files loaded + at least one function seen.
+            self.assertIn("functions_analyzed", result)
+            self.assertGreaterEqual(result["functions_analyzed"], 1)
 
 
 if __name__ == "__main__":

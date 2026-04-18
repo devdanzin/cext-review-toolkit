@@ -98,6 +98,9 @@ class TestScanVersionCompat(unittest.TestCase):
             self.assertIn("findings", result)
             self.assertIn("summary", result)
             self.assertIn("min_python", result)
+            # Envelope sanity: data files loaded + at least one function seen.
+            self.assertIn("functions_analyzed", result)
+            self.assertGreaterEqual(result["functions_analyzed"], 1)
 
 
 if __name__ == "__main__":

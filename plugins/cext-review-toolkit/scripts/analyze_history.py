@@ -13,6 +13,7 @@ Options:
     --until DATE      End date (ISO format, default: today)
     --last N          Analyze exactly the last N commits
     --max-commits N   Cap total commits analyzed (default: 2000)
+    --workers N       Parallel git subprocess workers (default: 8)
     --no-function     Skip function-level churn (file-level only, faster)
 """
 
@@ -22,6 +23,7 @@ import subprocess
 import sys
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -313,8 +315,12 @@ def _get_py_function_boundaries(filepath: Path) -> list[dict]:
     return functions
 
 
-def compute_function_churn(commits, scan_root, project_root, max_files=0):
-    """Map diff hunks to function boundaries using Tree-sitter/AST."""
+def compute_function_churn(commits, scan_root, project_root, max_files=0, workers=8):
+    """Map diff hunks to function boundaries using Tree-sitter/AST.
+
+    Uses a ThreadPoolExecutor to run per-commit ``git show`` calls in
+    parallel, which is the dominant cost on large histories.
+    """
     file_functions = {}
     if scan_root.is_file():
         all_files = [scan_root]
@@ -362,35 +368,51 @@ def compute_function_churn(commits, scan_root, project_root, max_files=0):
     if not file_functions:
         return []
 
-    func_commits = defaultdict(set)
+    # Collect all (commit_hash, file_path) pairs that need diffs.
+    work_items: list[tuple[str, str]] = []
     for commit in commits:
-        if _check_script_timeout():
-            break
         for file_path in commit["files"]:
-            if file_path not in file_functions:
-                continue
-            try:
-                diff_result = _run_git(
-                    ["show", "--format=", "-U0", commit["hash"], "--", file_path],
-                    project_root,
-                )
-                if diff_result.returncode != 0:
-                    continue
-            except subprocess.TimeoutExpired:
-                continue
+            if file_path in file_functions:
+                work_items.append((commit["hash"], file_path))
 
-            changed_lines = set()
-            for line in diff_result.stdout.splitlines():
-                hunk = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
-                if hunk:
-                    start = int(hunk.group(1))
-                    count = int(hunk.group(2)) if hunk.group(2) else 1
-                    changed_lines.update(range(start, start + count))
+    def _fetch_hunk(item: tuple[str, str]) -> tuple[str, str, set[int]]:
+        """Fetch changed line numbers for one (commit, file) pair."""
+        commit_hash, file_path = item
+        try:
+            diff_result = _run_git(
+                ["show", "--format=", "-U0", commit_hash, "--", file_path],
+                project_root,
+            )
+            if diff_result.returncode != 0:
+                return commit_hash, file_path, set()
+        except subprocess.TimeoutExpired:
+            return commit_hash, file_path, set()
 
+        changed_lines: set[int] = set()
+        for diff_line in diff_result.stdout.splitlines():
+            hunk = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", diff_line)
+            if hunk:
+                start = int(hunk.group(1))
+                count = int(hunk.group(2)) if hunk.group(2) else 1
+                changed_lines.update(range(start, start + count))
+        return commit_hash, file_path, changed_lines
+
+    func_commits: dict[tuple[str, str], set[str]] = defaultdict(set)
+    if not work_items:
+        return []
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for commit_hash, file_path, changed_lines in pool.map(
+            _fetch_hunk, work_items
+        ):
+            if _check_script_timeout():
+                break
+            if not changed_lines:
+                continue
             for func in file_functions[file_path]:
                 func_range = set(range(func["line_start"], func["line_end"] + 1))
                 if changed_lines & func_range:
-                    func_commits[(file_path, func["name"])].add(commit["hash"])
+                    func_commits[(file_path, func["name"])].add(commit_hash)
 
     results = []
     for (file_path, func_name), commit_hashes in func_commits.items():
@@ -417,25 +439,53 @@ def _truncate_diff(diff_text, max_lines):
     return "\n".join(lines[:max_lines]) + "\n[diff truncated]"
 
 
-def get_commit_details(commits, commit_type, project_root, scan_root, max_diff_lines):
+def _fetch_one_diff(commit_hash, project_root, rel_scope, max_diff_lines):
+    """Fetch the diff for a single commit. Thread-safe."""
+    diff_args = ["show", "--format=", "--patch", commit_hash, "--"]
+    if rel_scope != ".":
+        diff_args.append(rel_scope)
+    try:
+        dr = _run_git(diff_args, project_root)
+        diff_text = dr.stdout if dr.returncode == 0 else ""
+    except subprocess.TimeoutExpired:
+        diff_text = "[diff unavailable: timeout]"
+    return commit_hash, _truncate_diff(diff_text, max_diff_lines)
+
+
+def get_commit_details(
+    commits, commit_type, project_root, scan_root, max_diff_lines, workers=8
+):
+    """Get details (including diffs) for commits of a given type.
+
+    Fetches diffs in parallel using a thread pool for speed.
+    """
     typed = [c for c in commits if c["type"] == commit_type]
-    results = []
+    if not typed:
+        return []
+
     rel_scope = _relative_scope(scan_root, project_root)
 
+    # Fetch all diffs in parallel.
+    diff_map: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futures = {
+            pool.submit(
+                _fetch_one_diff, c["hash"], project_root,
+                rel_scope, max_diff_lines,
+            ): c["hash"]
+            for c in typed
+        }
+        for future in as_completed(futures):
+            if _check_script_timeout():
+                pool.shutdown(wait=False, cancel_futures=True)
+                break
+            commit_hash, diff_text = future.result()
+            diff_map[commit_hash] = diff_text
+
+    # Assemble results in original commit order.
+    results = []
     for commit in typed:
-        if _check_script_timeout():
-            break
-        diff_args = ["show", "--format=", "--patch", commit["hash"], "--"]
-        if rel_scope != ".":
-            diff_args.append(rel_scope)
-        try:
-            dr = _run_git(diff_args, project_root)
-            diff_text = dr.stdout if dr.returncode == 0 else ""
-        except subprocess.TimeoutExpired:
-            diff_text = "[diff unavailable: timeout]"
-
-        diff_text = _truncate_diff(diff_text, max_diff_lines)
-
+        diff_text = diff_map.get(commit["hash"], "")
         results.append(
             {
                 "commit": commit["hash"],
@@ -487,6 +537,7 @@ def parse_args(argv):
         "last": None,
         "max_commits": 2000,
         "max_files": 0,
+        "workers": 8,
         "no_function": False,
     }
 
@@ -518,6 +569,9 @@ def parse_args(argv):
             i += 2
         elif arg == "--max-files" and i + 1 < len(argv):
             args["max_files"] = _parse_int("--max-files", argv[i + 1])
+            i += 2
+        elif arg == "--workers" and i + 1 < len(argv):
+            args["workers"] = _parse_int("--workers", argv[i + 1])
             i += 2
         elif arg == "--no-function":
             args["no_function"] = True
@@ -566,8 +620,15 @@ def analyze(argv=None):
     try:
         commits, file_churn = parse_git_log(proc.stdout, max_commits, project_root)
     finally:
+        # Terminate git if it's still writing (parse_git_log may have stopped
+        # reading early due to max_commits, which would block git on a full
+        # pipe buffer -> deadlock).
         proc.terminate()
-        proc.wait(timeout=10)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
 
     commit_cap_applied = len(commits) >= max_commits
     if last_n is not None and commits:
@@ -588,23 +649,29 @@ def analyze(argv=None):
         commits_by_type[c["type"]] += 1
         authors.add(c["author"])
 
+    workers = args["workers"]
+
     function_churn = []
     function_churn_note = None
     if args["no_function"] or _check_script_timeout():
         function_churn_note = "Function-level churn skipped"
     else:
         function_churn = compute_function_churn(
-            commits, scan_root, project_root, max_files=args["max_files"]
+            commits, scan_root, project_root,
+            max_files=args["max_files"], workers=workers,
         )
 
     recent_fixes = get_commit_details(
-        commits, "fix", project_root, scan_root, _MAX_DIFF_LINES_FIX
+        commits, "fix", project_root, scan_root, _MAX_DIFF_LINES_FIX,
+        workers=workers,
     )
     recent_features = get_commit_details(
-        commits, "feature", project_root, scan_root, _MAX_DIFF_LINES_FIX
+        commits, "feature", project_root, scan_root, _MAX_DIFF_LINES_FIX,
+        workers=workers,
     )
     recent_refactors = get_commit_details(
-        commits, "refactor", project_root, scan_root, _MAX_DIFF_LINES_REFACTOR
+        commits, "refactor", project_root, scan_root, _MAX_DIFF_LINES_REFACTOR,
+        workers=workers,
     )
 
     co_change_clusters = compute_co_change_clusters(commits)

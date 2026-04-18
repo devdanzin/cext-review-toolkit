@@ -94,6 +94,9 @@ class TestScanModuleState(unittest.TestCase):
             self.assertIn("findings", result)
             self.assertIn("summary", result)
             self.assertIn("by_type", result["summary"])
+            # Envelope sanity: data files loaded + at least one function seen.
+            self.assertIn("functions_analyzed", result)
+            self.assertGreaterEqual(result["functions_analyzed"], 1)
 
 
 if __name__ == "__main__":

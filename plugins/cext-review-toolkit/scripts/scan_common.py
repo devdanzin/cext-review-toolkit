@@ -111,11 +111,16 @@ def discover_c_files(
 
 def load_api_tables() -> dict:
     """Load API classification tables from the data directory."""
+    path = _DATA_DIR / "api_tables.json"
     try:
-        with open(_DATA_DIR / "api_tables.json", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        print(json.dumps({"error": f"Failed to load api_tables.json: {e}"}))
+        print(f"WARNING: Failed to load {path}: {e}", file=sys.stderr)
+        print(
+            json.dumps({"error": f"Failed to load api_tables.json: {e}"}),
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 
@@ -222,6 +227,13 @@ _SAFETY_KEYWORDS = {
     "not a bug",
     "deliberately",
     "expected",
+    "refcount safe",
+    "borrowed ok",
+    "gil held",
+    "gil-held",
+    "already locked",
+    "already protected",
+    "thread-safe",
 }
 
 
@@ -232,6 +244,41 @@ def has_safety_annotation(comments: list[str]) -> bool:
         if any(kw in lower for kw in _SAFETY_KEYWORDS):
             return True
     return False
+
+
+def is_in_region(offset: int, regions: list[tuple[int, int]]) -> bool:
+    """Check if a byte offset falls within any of the given regions."""
+    return any(start <= offset < end for start, end in regions)
+
+
+def make_finding(
+    finding_type: str,
+    *,
+    function: str = "",
+    line: int = 0,
+    classification: str,
+    severity: str,
+    confidence: str = "high",
+    detail: str,
+    **extra: object,
+) -> dict:
+    """Create a finding dict with consistent key naming.
+
+    All scanners produce findings as dicts with a common structure.
+    This helper ensures consistent keys and allows scanner-specific
+    extra fields via **extra.
+    """
+    finding: dict = {
+        "type": finding_type,
+        "function": function,
+        "line": line,
+        "classification": classification,
+        "severity": severity,
+        "confidence": confidence,
+        "detail": detail,
+    }
+    finding.update(extra)
+    return finding
 
 
 def is_suppressed_by_comment(
