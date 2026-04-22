@@ -861,3 +861,432 @@ assert state["failed_at"] == [3]
 **Confirmed on**:
 - CPython 3.14 `_zstd` extension + `libzstd.so.1` — validated that `from_stack_of("libc/mm/malloc", func_name="ZSTD_createCCtx")` surgically fails one malloc inside libzstd and CPython raises `ZstdError: Unable to create ZSTD_CCtx instance.` with no segfault, no leaked state, and no collateral on surrounding allocations. Full reproducer: `t6_zstd_validation.py` (see `docs/libfiu_helpers.py` usage example).
 
+---
+
+## Technique 24: RSS growth monitoring for leaks invisible to tracemalloc
+
+**Triggers**: Per-instance leaks where the leaked memory is allocated by libstdc++'s `malloc`/`new` rather than by CPython's allocator hierarchy. Specifically: `tp_dealloc` that skips destructors of embedded C++ members (`std::shared_ptr` control blocks, `std::unique_ptr` heap buffers, `std::string` SSO overflow, `std::queue`/`std::mutex`/`std::condition_variable` storage); `__init__` that re-allocates a C++ object without freeing the prior one; any code path where `new T(...)` fires without a matching `delete`.
+
+**Bug class**: C++-embedded-member leaks in Python extension types. These are **invisible to Technique 17 (tracemalloc)** because `tracemalloc` only sees allocations that pass through `PyMem_Malloc` / `PyObject_Malloc`. A `std::shared_ptr<T>` constructor calls libstdc++'s `__gnu_cxx::__aligned_membuf` allocator (which eventually calls raw `malloc`), bypassing CPython's allocator entirely. Same for `new T(...)`, `std::make_shared<T>()`, and most STL containers. The leak is real, but tracemalloc reports zero.
+
+**How it works**: `resource.getrusage(resource.RUSAGE_SELF).ru_maxrss` returns the process's peak resident-set-size in KiB. Measure it before and after N create-destroy (or re-init) cycles; a monotonic, linear-in-N growth is unambiguous evidence of a leak, and the slope gives the per-operation leak size. The trick is making N large enough that per-iteration leak × N rises above RSS measurement noise (~100-300 KB from Python's own garbage).
+
+### Template
+
+```python
+import gc, resource
+
+def rss_kb():
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
+# Warmup: let steady-state Python allocations settle.
+for _ in range(100):
+    obj = TargetType()
+    del obj
+gc.collect()
+rss0 = rss_kb()
+
+N = 10_000
+for _ in range(N):
+    obj = TargetType()
+    del obj
+gc.collect()
+rss1 = rss_kb()
+
+growth_kb = rss1 - rss0
+per_instance_b = (growth_kb * 1024) / N
+print(f"{N} cycles: RSS {rss0}→{rss1} KB (+{growth_kb} KB)")
+print(f"Per-instance leak: {per_instance_b:.1f} bytes")
+```
+
+### Detection threshold
+
+- **Per-cycle leak < 16 B**: below reliable detection. Linux RSS is page-granular (4 KB pages); allocations smaller than ~100 B may never touch a new page in 10k cycles. Use N = 100k or bigger objects.
+- **Per-cycle leak 16–100 B**: detectable at N = 10k but signal is noisy. Run 3 times and check consistency.
+- **Per-cycle leak > 100 B**: clean signal at N = 10k.
+- **Per-cycle leak > 1 KB**: clean signal at N = 1k.
+
+For reference, a default `std::shared_ptr<T>` control block is 16–32 B; a default-constructed `std::mutex` + `std::condition_variable` + `std::queue` combo is ~300–700 B depending on libc/libstdc++ version.
+
+### Gotchas
+
+1. **Run inside a subprocess or fresh interpreter if possible.** Stale cached Python objects (bytecode cache, import state) can inflate RSS0 by MB amounts. Use `subprocess.run([sys.executable, ...])` for a clean baseline.
+2. **`ru_maxrss` is high-water-mark, not current.** It never decreases. If the workload does large temporary allocations during warmup, RSS0 will already be high and the slope will be measured on the "additional growth" axis. This is what you want.
+3. **Linux reports `ru_maxrss` in KB, macOS in bytes.** Catalog template assumes Linux. On macOS, divide by 1024.
+4. **glibc `malloc` has free-list arenas that don't always return memory to the kernel.** Even with 100% correct cleanup, RSS may show a one-time small spike that then stays flat. A leak shows *linear* growth across contiguous N-sized batches. Run multiple batches to distinguish.
+5. **Combine with tracemalloc** to confirm the leak is **not** in the CPython allocator. If tracemalloc reports 0 but RSS grows, the leak is in libstdc++/libc (the case this technique targets). If tracemalloc reports growth, use Technique 17's differential-snapshot instead — it gives precise allocation sites.
+6. **`gc.collect()` before the measurement closes Python-side cycles** that would otherwise inflate the diff. Always call it. For C++-embedded-member leaks, `gc.collect()` has no effect on the leaked bytes (C++ destructors don't run), which is exactly why the leak shows up.
+
+### When to use tracemalloc (Technique 17) vs this
+
+- **Leak is in a Python-level allocation** (e.g., `PyList_New` result never DECREFed): Technique 17. Gives you the allocation stack.
+- **Leak is in a C++ STL member that skips destruction**: Technique 24. Technique 17 reports 0.
+- **Unsure**: run both. If Technique 17 shows no growth but Technique 24 does, you know it's a C++-side leak and can stop looking for missing `Py_DECREF`s.
+
+**Confirmed on**:
+- couchbase-python-client `pycbc_streamed_result` — 786 B per create-destroy cycle (confirms F12 `shared_ptr<rows_queue>` destructor skip in `tp_dealloc`). Tracemalloc reported 0 bytes growth.
+- couchbase-python-client `pycbc_hdr_histogram.__init__` — 4.5 KB per re-init (confirms F18 `hdr_init` second-call leak of prior counts buffer). `hdr_init` uses raw `malloc`, invisible to tracemalloc.
+
+---
+
+## Technique 25: SystemError probe for PyCFunction contract violations
+
+**Triggers**: Any C function exposed via `METH_*` flags that returns a non-NULL `PyObject*` while `PyErr_Occurred()` is true. The two most common patterns:
+
+- `if (!PyArg_ParseTupleAndKeywords(...)) { PyErr_SetString(...); Py_RETURN_NONE; }` — returns `Py_None` instead of `NULL`, with an exception pending.
+- `tp_new` that does `PyErr_SetString(...); Py_RETURN_NONE;` on parse failure — returns `Py_None` (which by `tp_new`'s contract should be an instance of the type being created), but with exception set.
+
+**Bug class**: PyCFunction contract violation. CPython's call dispatcher checks, after every C function return, that the `(return_value != NULL) == (PyErr_Occurred() == NULL)` invariant holds. If it doesn't, CPython raises:
+
+```
+SystemError: <qualname> returned a result with an exception set
+```
+
+This is the **unambiguous signature** of the bug — no other code path in CPython produces this exact message. If you see it, you've caught a PyCFunction-contract violation, every time.
+
+**How it works**: Pass deliberately-malformed argument types to the suspect function. `PyArg_ParseTupleAndKeywords` sets `TypeError` on format-string mismatch; if the function has the buggy `PyErr_SetString + Py_RETURN_NONE` pattern, the return-without-NULL trips CPython's contract check and surfaces as `SystemError`.
+
+### Template
+
+```python
+from couchbase.logic.pycbc_core import _core   # or whatever target module
+
+MODULE_FNS = [
+    "fn_name_1", "fn_name_2", "fn_name_3",       # fill in the target functions
+]
+
+systemerror_count = 0
+for fn_name in MODULE_FNS:
+    fn = getattr(_core, fn_name)
+    # Probe 1: positional garbage
+    try:
+        fn("garbage")
+    except SystemError as e:
+        print(f"{fn_name}: SystemError (BUG): {e}")
+        systemerror_count += 1
+    except TypeError:
+        pass   # clean — parse function's TypeError propagated correctly
+    except Exception as e:
+        print(f"{fn_name}: {type(e).__name__}: {e}")  # unusual
+    # Probe 2: bad kwargs (forces a different parse-failure branch)
+    try:
+        fn(x=1, y=2)
+    except SystemError as e:
+        print(f"{fn_name}: SystemError (BUG): {e}")
+        systemerror_count += 1
+    except (TypeError, ValueError):
+        pass
+
+print(f"Total SystemError observations: {systemerror_count}")
+```
+
+### Why both probes matter
+
+Different parse-failure paths through `PyArg_ParseTupleAndKeywords` can take different error branches inside the C function. A positional call with wrong-type args fails at type-check; a kwargs-only call with unknown keys fails at kwarg-validation; a completely malformed call fails at arity-check. If the function has the bug pattern on *some* paths but not others, one probe will miss while the other catches. Always run at least two.
+
+### What you can't probe this way
+
+- **`tp_init` sites** that return `-1` on error. `tp_init` uses the C-int return convention, not the pointer convention, so it's immune to this specific contract violation. Those bugs produce `ValueError` or whatever exception was set, with no SystemError. They're real bugs (caller's missing error check) but need a different detection technique.
+- **Functions whose bug is on the success path** — returning `Py_None` as a valid return value when an error *should* have fired. This technique detects "returned non-NULL with exception set"; it does not detect "returned non-NULL with no exception set when the operation actually failed". For that, you need semantic assertions against the function's docs.
+
+### Gotchas
+
+1. **Python 3.9+ prints a traceback but the SystemError is still catchable.** The `SystemError: ... returned a result with an exception set` message goes to the `except SystemError` clause; the original (intended) exception becomes the `__context__` of the SystemError. Print `e.__context__` if you want to see the masked specific exception.
+2. **Some wrappers swallow the SystemError.** If the C function is called via a Cython wrapper or a Python-level `try/except BaseException:`, the SystemError may be converted to something else. Call the C function **directly** from the extension module (e.g., `module._core.transaction_op(...)`) for clean detection, not through its Python facade.
+3. **The bug manifests on the very next Python statement after the broken function returns.** Not inside the function call. If you see `SystemError` with a traceback pointing at the `return` or the following line, that's the expected pattern — the bug is in whatever function the `<qualname>` in the error message names.
+4. **A variant of this bug returns an *old* return value from a cached state.** If you suspect that rather than `Py_None`, the template still works — the SystemError message changes slightly but still contains "returned a result with an exception set".
+
+### When this technique is the right choice
+
+- Any C extension with many `PyArg_ParseTupleAndKeywords` call sites and a project convention of `PyErr_SetString(...); Py_RETURN_NONE;` in the failure branch. A handful of sites may be correct (using `return NULL`) while neighbors are buggy (using `Py_RETURN_NONE`). This technique catches the buggy ones fast.
+- Before shipping a new extension: run a loop that calls every METH_VARARGS|METH_KEYWORDS function with bad args and assert **zero** SystemError observations. Regression-catching CI tool.
+- In code-review, as a sanity check: if a reviewer spots one `PyErr_SetString; Py_RETURN_NONE`, grep the file for the pattern and run this technique on every hit.
+
+**Confirmed on**:
+- couchbase-python-client `_core` — 8 SystemError observations across `transaction_op`, `transaction_query_op`, `transaction_get_multi_op`, `destroy_transactions` (module-level functions), and 2 of 3 `tp_new` sites (`transaction_config`, `transaction_options`). Matches F2 and F3 findings in the v1 review. The remaining `tp_new` (`transaction_query_options`) has the same bug pattern but requires a different input shape to trip the parse failure; the technique documents how to vary probes to catch this class.
+
+---
+
+## Technique 26: Cyclic-GC threshold coercion
+
+**Triggers**: Timing-dependent races in `tp_traverse` / `tp_clear` paths where an object is GC-tracked but its traversable fields (e.g. `ma_keys`, `ob_item`, or any `PyObject *` member the traverse function walks) haven't been populated yet. Common shapes: subclass-conditional `PyObject_GC_UnTrack` in a constructor, partial `tp_alloc` → init split where `tp_alloc`'s implicit tracking precedes member assignment, destructors that `PyObject_GC_UnTrack` after clearing fields and then call back into Python.
+
+**Bug class**: Race between "GC tracking starts" and "all fields that `tp_traverse` reads are valid". At default thresholds the race wins rarely — a deployed program may never hit it. But the CODE is reachable on every construction; only the specific allocation-count alignment that triggers `collect()` inside the vulnerable window is rare. Coercing the threshold down to `(1, 1, 1)` forces `collect()` on every tracked allocation, turning the rare race into a deterministic crash on iteration 0 or 1.
+
+**How it works**: `gc.set_threshold(1, 1, 1)` means "fire gen-0 collect when gen-0 count > 1". Every call to `PyObject_GC_New` / `_PyObject_GC_Alloc` increments the gen-0 count and may fire `collect()`. During `collect()`, every currently-tracked object's `tp_traverse` is invoked. If the target object is tracked but its fields aren't populated, traverse derefs a NULL pointer and SIGSEGVs.
+
+### Template
+
+```python
+import gc, my_extension
+
+class MySubclass(my_extension.BaseType):
+    """Subclass — some extensions skip GC UnTrack on the subclass path."""
+
+# Coerce: gen-0 collect fires on every tracked allocation.
+gc.set_threshold(1, 1, 1)
+
+# Construct via a path that allocates GC-tracked objects (iter, tuple,
+# list, dict, etc.) during the partial-init window.
+for i in range(100):
+    MySubclass([("k", i), ("v", i + 1)])  # should SEGV within 1-2 iterations
+```
+
+### Detection
+
+- **SIGSEGV on iteration 0 or 1** → bug confirmed, race window is open during construction.
+- **Completes 1000+ iterations** → either no race, or the path doesn't allocate tracked objects during the vulnerable window (try a different construction path — e.g. sequence-of-pairs vs dict-fast-path, non-dict-mapping vs dict).
+- **RecursionError / MemoryError** → the threshold is too aggressive and cascading; back off to `(10, 10, 10)` or `(100, 10, 10)`.
+
+### Gotchas
+
+1. **Run with `PYTHONUNBUFFERED=1`.** The SIGSEGV happens mid-construction; any buffered stdout / stderr is lost. Use unbuffered so you see how many iterations survived before the crash.
+2. **Restore the threshold in a `finally` block** if the reproducer continues after a handled exception — the aggressive setting also slows unrelated tests.
+3. **Newly-allocated objects aren't walked during the collect that was triggered by their own allocation.** The tracking step happens AFTER `_PyObject_GC_Alloc` returns. So the crash is triggered not by the construction's OWN `tp_alloc`, but by the NEXT tracked allocation inside the construction (a tuple, an iterator, a list). The victim is the previous iteration's partially-init object still alive on the stack.
+4. **Happens only with `Py_TPFLAGS_HAVE_GC`.** Non-GC types are never walked; this technique doesn't apply.
+5. **Default thresholds `(700, 10, 10)` are too loose** to reliably trigger in reasonable wall time even with the bug present; `(1, 1, 1)` is the sweet spot for deterministic detection without breaking the interpreter.
+
+### When to use this vs running the test suite
+
+- The test suite is unlikely to construct an extension subclass with enough GC pressure to trigger the race. This technique is specifically for catching the class of bug where "tests pass, production crashes under unusual GC alignment".
+- If a scanner flagged `PyObject_GC_UnTrack(obj)` inside a conditional or inside a constructor's success path, run this technique on a subclass of the target type. It'll confirm or dismiss in 30 seconds.
+
+**Confirmed on**:
+- frozendict 2.4.7 `frozendict_new_barebone` subclass UnTrack gap (`c_src/3_10/frozendictobject.c:1422`). `MyFD(frozendict.frozendict)([("k", 0), ("v", 1)])` SIGSEGVs deterministically within iteration 0 or 1 at threshold `(1, 1, 1)`. Reproducer: `reports/frozendict_v1/reproducers/repro_f12_subclass_gc_crash.py`. 5/5 deterministic across runs.
+
+---
+
+## Technique 27: Subprocess-isolated dense OOM sweep
+
+**Triggers**: Unchecked allocation returns in extension code. A function does `ptr = some_alloc(...); use(ptr->field);` without `if (!ptr) return NULL;`. When the allocation fails (returns NULL), the next dereference segfaults. Multiple sites of the same pattern across different code paths. The exact malloc offset that triggers each site varies per path, and we don't know a priori which offset targets which site.
+
+**Bug class**: Missing NULL checks on `PyObject_New` / `PyObject_GC_New` / `PyTuple_New` / `PyDict_New` / internal allocators like `new_keys_object`. Technique 18 (`_testcapi.set_nomemory`) and Technique 23 (libfiu surgical injection) target single sites. This technique is for when you suspect multiple unchecked sites across a family of code paths and want to cast a wide net.
+
+**How it works**: Launch each target code path in its OWN subprocess with libfiu preloaded and `fiu.enable("libc/mm/malloc")` set to fail every subsequent malloc. Classify the subprocess exit code:
+- 139 = SIGSEGV (crash — bug)
+- 134 = SIGABRT (abort — bug)
+- 10 = clean `MemoryError` raised (good — bug absent on this path)
+- 0 = completed (either no bug, or the tuple/free-list short-circuited the allocation)
+
+Because each run is isolated, a crash in path A doesn't contaminate path B. Run many offsets in parallel and aggregate.
+
+### Template
+
+```python
+import os, subprocess
+from pathlib import Path
+
+LIBFIU = Path.home() / "projects/libfiu/install/lib"
+TARGET_PY = "/path/to/python"
+
+ENV = {
+    **os.environ,
+    "PYTHONMALLOC": "malloc",       # disable pymalloc so libc mallocs are hit
+    "LD_LIBRARY_PATH": str(LIBFIU),
+    "LD_PRELOAD": f"{LIBFIU}/fiu_run_preload.so:{LIBFIU}/fiu_posix_preload.so",
+}
+
+def run(label: str, code: str) -> None:
+    proc = subprocess.run([TARGET_PY, "-c", code], env=ENV,
+                          capture_output=True, text=True, timeout=15)
+    verdict = (
+        "SIGSEGV (bug)"          if proc.returncode == 139
+        else "SIGABRT (bug)"     if proc.returncode == 134
+        else "clean MemoryError" if "MemoryError" in proc.stderr
+        else f"exit={proc.returncode}"
+    )
+    print(f"{label}: {verdict}")
+
+# Each target path in its own subprocess
+PATHS = [
+    ("A: ext.construct({'a':1})",
+     "import fiu, ext; fiu.enable('libc/mm/malloc'); ext.construct({'a':1})"),
+    ("B: ext.construct(a=1, b=2)",
+     "import fiu, ext; fiu.enable('libc/mm/malloc'); ext.construct(a=1, b=2)"),
+    ("C: ext.construct([('a',1),('b',2)])",
+     "import fiu, ext; fiu.enable('libc/mm/malloc'); ext.construct([('a',1),('b',2)])"),
+    # ... more target paths ...
+]
+
+for label, code in PATHS:
+    run(label, code)
+```
+
+For a dense *offset* sweep (not just "fail everything from point X"), use the `nth_allocation` helper from `docs/libfiu_helpers.py` — run the same target code 30 times with N = 1, 2, 3, …, and record which offsets produce which verdicts. That tells you which specific allocations in the target path are unchecked.
+
+### Gotchas
+
+1. **`subprocess.CompletedProcess.returncode` on Linux returns `-N` for signal N**, not `128+N` / `139`. Shell gives 139; Python's subprocess gives `-11`. Test for both `== 139` and `== -11` if you're capturing via subprocess.
+2. **`PYTHONMALLOC=malloc` is load-bearing.** Without it, pymalloc intercepts small allocations (< 512 B) before libc; libfiu never sees them. This masks most extension-code allocations, which are small.
+3. **Tuple/list/dict free-lists further mask allocations.** CPython caches small tuples (size ≤ 19), lists, and dicts. Even with `PYTHONMALLOC=malloc`, a `PyTuple_New(2)` in hot code may pull from the free-list without calling malloc. If your target allocates a small tuple and the sweep consistently completes without crashing, suspect the free-list is hiding the bug. Use a debug build (no free-lists) or prime a clean interpreter state.
+4. **Subprocess startup is ~100-200 ms.** A sweep of 30 offsets × 6 paths is ~30 s wall time. Worth the isolation cost.
+5. **Output gets lost on SIGSEGV.** The crashed subprocess's stdout may or may not be flushed before the segfault. Rely on exit code, not stdout, for the verdict. Use `capture_output=True` to at least capture what made it out.
+6. **Fresh `fiu.enable("libc/mm/malloc")` after every failed path** — libfiu state persists within a single process. That's why each path lives in its own subprocess: no need to reset state, and crashes don't leak into the next target.
+
+### When to use this vs Technique 18 (set_nomemory) or Technique 23 (libfiu surgical)
+
+- **Technique 18**: for CPython-allocator bugs (pymalloc-visible). Doesn't reach foreign allocators.
+- **Technique 23**: for surgical injection — "fail ONLY the malloc inside function X". Best when you have one specific site.
+- **Technique 27** (this one): for scanning many sites / many paths at once. Best when you have multiple suspects and want a parallel sweep. Complements T23 rather than replacing it.
+
+**Confirmed on**:
+- frozendict 2.4.7 F7 + F8 (`frozendictobject.c:1514, 1533, 1596`; `c_src/3_10/frozendictobject.c:197, 431, 483, 544`) — 4 construction paths × 30 sweep offsets per path, all 120 runs SIGSEGV. Paths: `frozendict({'a':1})`, `frozendict(a=1, b=2)`, `frozendict([('a',1),('b',2)])`, `frozendict(UserDict({'a':1}))`. Reproducer: `reports/frozendict_v1/reproducers/repro_f7_f8_oom_crash.py`.
+
+---
+
+## Technique 28: ctypes struct-field probe via id + offset
+
+**Triggers**: Refcount leaks on internal CPython structs not exposed via Python API — specifically `Py_EMPTY_KEYS.dk_refcnt`, interned-string counts, `PyDictObject.ma_version_tag`, any `Py_ssize_t` or pointer field in a process-wide singleton's internal layout.
+
+**Bug class**: A bug increments (or fails to decrement) a refcount on a singleton that users can't see directly from Python. `sys.getrefcount` only works on Python-visible objects. For `Py_EMPTY_KEYS` (the singleton shared by all empty dicts) or internal dict-keys-table counters, you need to read the raw memory.
+
+**How it works**: Compute `id(python_obj) + field_offset`, cast to `ctypes.POINTER(<field_type>)`, dereference to read. Works because `id(obj)` returns the object's memory address in CPython; the struct layout of `PyDictObject`, `PyDictKeysObject`, `PyTupleObject`, etc. is stable within a CPython minor version. Read before N operations, read after, compute the delta.
+
+### Template
+
+```python
+import ctypes
+
+def dk_refcnt_of(d: dict) -> tuple[int, int]:
+    """Read dk_refcnt from the (frozen)dict's ma_keys PyDictKeysObject.
+
+    PyDictObject layout (CPython 3.10, 64-bit):
+      PyObject_HEAD               16 bytes
+      Py_ssize_t ma_used           8 bytes
+      uint64_t ma_version_tag      8 bytes  -> ma_keys at offset 32
+      PyDictKeysObject *ma_keys
+      PyObject **ma_values
+    PyDictKeysObject layout:
+      Py_ssize_t dk_refcnt         offset 0
+    """
+    # Pointer to the ma_keys pointer
+    ma_keys_ptr = ctypes.cast(id(d) + 32, ctypes.POINTER(ctypes.c_ssize_t))
+    keys_addr = ma_keys_ptr[0]
+    dk_refcnt = ctypes.cast(keys_addr, ctypes.POINTER(ctypes.c_ssize_t))[0]
+    return keys_addr, dk_refcnt
+
+# Anchor: grab the singleton-holding object
+empty_fd = ext.frozendict()
+addr, baseline = dk_refcnt_of(empty_fd)
+print(f"baseline dk_refcnt: {baseline}")
+
+N = 10_000
+for _ in range(N):
+    ext.frozendict.fromkeys(range(3))    # operation that may leak
+
+_, after = dk_refcnt_of(empty_fd)
+per_call = (after - baseline) / N
+print(f"delta: {after - baseline}  per-call: {per_call:.3f}")
+```
+
+### Detection
+
+- **Per-call delta == 1.000** (or any integer) → bug confirmed; the field is being incremented without matching decrement (or vice versa).
+- **Per-call delta ≈ 0.000** → either no leak, or the operation doesn't touch this particular singleton. Check the code to verify you picked the right struct/field.
+- **Per-call delta noisy (e.g. 0.5 ± 0.2)** → the field is touched by many code paths, not just your N operations; use a more isolated test.
+
+### Gotchas
+
+1. **Struct layouts change across CPython versions.** Offset 32 for `ma_keys` works on 3.10 but may shift on 3.12 (PEP 699 removed `ma_version_tag`, shrinking the struct by 8 bytes → `ma_keys` at offset 24 on 3.12+). Always verify against `Include/cpython/dictobject.h` for your target version.
+2. **Architecture-dependent.** 32-bit systems have 4-byte pointers and Py_ssize_t; offsets halve. Template assumes 64-bit.
+3. **Some extensions fork CPython's internal structs.** e.g. frozendict `#include`s its own modified `dictobject.c` with its OWN `Py_EMPTY_KEYS` sentinel (different address from the regular dict's). Verify by reading `id(empty_dict)` vs `id(empty_fd)` — if ma_keys addresses differ, you're looking at fork-specific state.
+4. **No bounds checking.** If the offset is wrong, you read garbage or segfault the reader process. Use in a subprocess for safety when testing against an unfamiliar struct.
+5. **Works best on singleton / process-wide state.** For per-instance refcounts, `sys.getrefcount(obj)` is simpler and doesn't need offset arithmetic.
+6. **The technique is allergic to stripped binaries and to `-fvisibility=hidden`.** The struct layout is defined by the header file, not exported as a symbol, so visibility doesn't matter — but if CPython is built with a non-standard layout (e.g. extra padding for a debug build), offsets may differ. Test against a known-good baseline first.
+
+### When to use vs sys.getrefcount / tracemalloc
+
+- **`sys.getrefcount(obj)`**: for ordinary Python-visible objects. Always prefer this when the leaked object has a Python reference you can hold.
+- **tracemalloc**: for total-memory tracking. Doesn't expose individual refcounts.
+- **Technique 28** (this one): for singletons / internal structs that users can't directly reach. `Py_EMPTY_KEYS.dk_refcnt`, keys-table counters, interned-string slots.
+
+**Confirmed on**:
+- frozendict 2.4.7 F13 `fromkeys` Py_EMPTY_KEYS leak (`c_src/3_10/frozendictobject.c:197`). `frozendict.fromkeys(range(3))` increments frozendict's own (NOT regular dict's) `Py_EMPTY_KEYS.dk_refcnt` by exactly 1 per call — 10,000 calls produce `delta = 10000` exactly. Reproducer: `reports/frozendict_v1/reproducers/repro_f13_fromkeys_empty_keys_leak.py`.
+
+---
+
+## Technique 29: MRO unbound-method bypass enumeration
+
+**Triggers**: Incomplete immutability (or validation) overrides in Python classes that inherit from a mutable base type. Common pattern: `class Frozen(SomeMutableBase): def __setitem__(self, k, v): raise TypeError(...)` — the Python-level override blocks `fd[k] = v` (bound-method call), but `SomeMutableBase.__setitem__(fd, k, v)` (unbound-method call) bypasses the override entirely and mutates the instance.
+
+**Bug class**: Trust-boundary failure in "immutable" Python wrappers. If the class is a *subclass* of a mutable type (inheritance), any caller with a reference can invoke the base class's unbound methods and mutate the "frozen" instance. Only composition (wrapping a mutable instance as an attribute) closes this gap. Affects frozendict, SortedDict-like libraries, any "readonly view" class that uses inheritance for isinstance compatibility.
+
+**How it works**: Walk `type(instance).__mro__`, enumerate every method on each base class that mutates the instance (for dict: `__setitem__`, `__delitem__`, `update`, `clear`, `pop`, `popitem`, `setdefault`, `__ior__`, `__init__`, etc.). For each, probe with `Base.method(instance, *args)` and compare the instance state before vs after. Any observable mutation is a bypass route.
+
+### Template
+
+```python
+def find_bypasses(cls, probe_factory, routes):
+    """
+    cls: the "frozen" class under test.
+    probe_factory: callable that returns a fresh instance in a known state.
+    routes: list of (label, callable_taking_probe_instance).
+    Returns: list of routes that observably mutated the probe.
+    """
+    bypassed = []
+    for label, op in routes:
+        probe = probe_factory()
+        before = dict(probe)        # or list(probe), or probe.copy(), etc.
+        try:
+            op(probe)
+        except Exception:
+            continue                # override caught it — good
+        after = dict(probe)
+        if before != after:
+            bypassed.append(label)
+            print(f"  {label!r}: MUTATED  {before} -> {after}")
+    return bypassed
+
+# Example: all 14 dict-descriptor routes against frozendict
+ROUTES = [
+    ("dict.__setitem__",        lambda fd: dict.__setitem__(fd, "k", "v")),
+    ("dict.__delitem__",        lambda fd: dict.__delitem__(fd, "a")),
+    ("dict.update (mapping)",   lambda fd: dict.update(fd, {"b": "updated"})),
+    ("dict.update (pairs)",     lambda fd: dict.update(fd, [("p", "q")])),
+    ("dict.update (kwargs)",    lambda fd: dict.update(fd, kw="v")),
+    ("dict.clear",              lambda fd: dict.clear(fd)),
+    ("dict.pop",                lambda fd: dict.pop(fd, "a", None)),
+    ("dict.popitem",            lambda fd: dict.popitem(fd)),
+    ("dict.setdefault",         lambda fd: dict.setdefault(fd, "nk", "d")),
+    ("dict.__ior__",            lambda fd: dict.__ior__(fd, {"i": "v"})),
+    ("dict.__init__ (mapping)", lambda fd: dict.__init__(fd, {"init": 1})),
+    ("dict.__init__ (kwargs)",  lambda fd: dict.__init__(fd, kw=1)),
+    ("super().__init__",        lambda fd: super(frozendict, fd).__init__({"s": 1})),
+]
+
+bypassed = find_bypasses(
+    frozendict,
+    probe_factory=lambda: frozendict({"a": 1, "b": 2}),
+    routes=ROUTES,
+)
+print(f"\nTotal bypass routes found: {len(bypassed)}")
+```
+
+### Where to look for routes
+
+Enumerate each class in `type(instance).__mro__` and list its dunder / mutation methods. Useful starter per base type:
+
+- **dict**: `__setitem__`, `__delitem__`, `update`, `clear`, `pop`, `popitem`, `setdefault`, `__ior__`, `__init__`.
+- **list**: `__setitem__`, `__delitem__`, `append`, `extend`, `insert`, `remove`, `pop`, `clear`, `sort`, `reverse`, `__iadd__`, `__imul__`, `__init__`.
+- **set**: `add`, `update`, `discard`, `remove`, `pop`, `clear`, `intersection_update`, `difference_update`, `symmetric_difference_update`, `__ior__`, `__iand__`, `__isub__`, `__ixor__`, `__init__`.
+
+Also probe `super(Frozen, instance).__init__(...)` — the descriptor protocol's own route can bypass overrides even when the direct unbound call is blocked.
+
+### Gotchas
+
+1. **Hash caches may go stale but not invalidate.** If the frozen class caches `hash(self)` on first call, mutations via bypass routes leave the cache stale. Detect by computing `hash(fd)`, mutating, re-computing. Reproducing this corrupts any set/dict using the instance as a key.
+2. **`__init__` may merge rather than reset.** For dict, calling `dict.__init__(fd, {"new": 1})` MERGES into existing contents; it does NOT reset. Surprising relative to a fresh-object invocation. Document this in the probe output to avoid confusion.
+3. **Only applies to INHERITANCE-based wrappers.** If the "frozen" class uses composition (`self._d = dict(...)`) instead of subclassing dict, the entire technique is inapplicable. Check `issubclass(FrozenClass, MutableBase)` first; if false, skip.
+4. **`isinstance(fd, dict)` being True is related and often compounds.** An inheritance-based frozen dict reports True for `isinstance(fd, dict)`, which leads callers to use `dict.*` methods defensively — unknowingly taking the bypass route. Note this in any bug report.
+5. **The fix is architectural** (switch from inheritance to composition), not per-method patching. `__setitem__` being overridden correctly can't save you; the base class has ~14 other ways in.
+6. **Run against a pure-Python probe, not a C probe.** C-implemented frozen classes typically set `tp_base = 0` (not dict-derived), so the `dict.__setitem__(c_fd, ...)` route gets `TypeError: descriptor requires a 'dict' object but received 'frozendict'`. This technique is specifically valuable for pure-Python fallback classes.
+
+### When to use this
+
+- **Every pure-Python "frozen"/"readonly"/"immutable" wrapper** that subclasses a mutable type. Should be part of the test suite for any such library.
+- **Before shipping a fallback** when the primary implementation is in C. The C side may be correctly immutable (fresh type, no dict inheritance), and the fallback may silently not be.
+- **During security-review** of any library advertising immutability. The enumeration is mechanical; the bypasses are concrete; the output is an explicit count.
+
+**Confirmed on**:
+- frozendict 2.4.7 pure-Python fallback (`src/frozendict/_frozendict_py.py`, `class frozendict(dict)`) — 14 distinct mutation-bypass routes. Every user on Python 3.11+ (where no C source tree exists) hits this because the pure-Python fallback is inherited from dict. Reproducer: `reports/frozendict_v1/reproducers/repro_f4_parity_dict_setitem.py`. Observed: all 14 routes mutate a fresh `frozendict({"a": 1, "b": 2})`, including `dict.__setitem__`, `dict.update` (3 signatures), `dict.clear`, `super().__init__`, and a partial `dict.__init__(fd, ...)` that merges.
+
