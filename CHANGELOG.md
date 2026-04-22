@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Reproducer catalog T24 + T25** (carried over from prior session): Technique 24 (RSS growth monitoring for leaks invisible to tracemalloc — confirmed on couchbase-python-client `pycbc_streamed_result` 786 B/cycle and `pycbc_hdr_histogram.__init__` 4.5 KB/re-init); Technique 25 (SystemError probe for PyCFunction contract violations — confirmed on couchbase-python-client `_core` with 8 SystemError observations). (#50)
+- **Reproducer catalog T26 — Cyclic-GC threshold coercion** (#50): `gc.set_threshold(1, 1, 1)` forces gen-0 collect on every tracked allocation, turning timing-dependent `tp_traverse` / `tp_clear` races during partial init into deterministic SIGSEGVs on iteration 0 or 1. Confirmed on frozendict 2.4.7 F12 subclass GC UnTrack gap (5/5 deterministic across runs).
+- **Reproducer catalog T27 — Subprocess-isolated dense OOM sweep** (#50): launch each target code path in its own subprocess with libfiu `LD_PRELOAD` + `PYTHONMALLOC=malloc` so SIGSEGVs in one path don't kill the driver; classify by exit code (139=SEGV, 134=ABRT, 10=clean MemoryError). Complements T23 (surgical) and T18 (CPython-allocator). Confirmed on frozendict 2.4.7 F7+F8 — 4 construction paths × 30 offsets, all 120 runs SIGSEGV.
+- **Reproducer catalog T28 — ctypes struct-field probe via `id + offset`** (#50): read refcounts/counters on internal CPython structs (`Py_EMPTY_KEYS.dk_refcnt`, keys-table fields) that aren't exposed via `sys.getrefcount`. Works by computing `id(obj) + field_offset`, casting through `ctypes.POINTER`, dereferencing. Confirmed on frozendict 2.4.7 F13 `fromkeys` leak — exactly +1.000 `dk_refcnt` per call.
+- **Reproducer catalog T29 — MRO unbound-method bypass enumeration** (#50): for pure-Python "frozen"/"readonly" wrappers that inherit from mutable types, programmatically exercise every `Base.method(instance, *args)` unbound call and check for observable state changes. Reveals incomplete immutability overrides. Confirmed on frozendict 2.4.7 pure-Python fallback — 14 distinct mutation-bypass routes (`dict.__setitem__`, `dict.update` × 3 signatures, `dict.clear`, `super().__init__`, and a `dict.__init__` merge-semantic surprise).
+
 ## [0.3.0] - 2026-04-18
 
 ### Added
