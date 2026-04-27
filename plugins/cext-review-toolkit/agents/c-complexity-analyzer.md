@@ -18,6 +18,26 @@ If `reports/<extension>_v1/preflight/generated_code_map.md` exists, **read it be
 
 If no preflight exists, proceed normally.
 
+## Cython mode (deep-effort runs)
+
+You are SKIPPED BY DEFAULT on Cython projects because `measure_c_complexity.py` operating on the generated `.c` is unreliable — Cython codegen artifacts (uniform `goto __PYX_L*_error;` cleanup, `__pyx_pf_*` wrapper machinery) produce artificially high cyclomatic-complexity scores on every function regardless of maintainer intent. When invoked on a Cython project for a deep-effort review, switch to the **Cython-adapted scope**:
+
+1. **Walk `.pyx` source-level complexity directly**. Do NOT use the C-level metrics — the .c is mostly Cython runtime. Instead, walk each `.pyx` file with a simple Python script: count `def`/`cdef` function bodies by indent, measure LOC and max nesting depth of each. Cyclomatic-ish: count `if`/`elif`/`for`/`while`/`try`/`except`/`with`. This gives you the maintainer-visible complexity at the source-of-truth.
+
+2. **Hot spots to expect on event-loop / I/O Cython projects**: `Loop.create_*` async methods (server/connection/datagram_endpoint) often top 200 LOC with nesting ≥9 due to AF_INET/AF_INET6/AF_UNIX cascade and addrinfo-iteration. `__convert_pyaddr_to_sockaddr`-style helpers are common per-family-cascade refactor targets.
+
+3. **Hand-written C in `includes/*.h`** is in scope for the original C-level metrics but is usually trivial (uvloop's headers are ~200 LOC total). Run the standard tool there, not on the generated `.c`.
+
+4. **The 23+ libuv-callback bodies** in handles/ are hand-written by the maintainer in `.pyx` and may have grown complex. Audit each `cdef ... noexcept with gil:` for LOC and nesting.
+
+5. **Output**: top-N hotspots ranked by **`.pyx`-source complexity** (NOT C-level). For each, brief simplification suggestion (extract helper, split per-family, flatten nesting via early returns).
+
+6. **Reference**: uvloop 0.22.1 — `Loop.create_server` (loop.pyx:1636, 214 LOC, nest 11), `Loop.create_connection` (loop.pyx:1850, 236 LOC, nest 9), `__convert_pyaddr_to_sockaddr` (dns.pyx:82, 98 LOC, nest 8) — all CONSIDER refactor targets surfaced in v3 review.
+
+7. **What to NOT flag**: `Loop.__cinit__` (long but flat — fork/signal plumbing mirrors CPython), `_print_debug_info` (flat sequence of `print()` statements), perf fast/slow path splits in `_exec_write` etc. — these are inherent complexity, ACCEPTABLE.
+
+If nothing substantive: "Cython mode: no maintainer-actionable complexity items; .pyx-level sources are trim."
+
 ## Key Concepts
 
 Complexity in C extensions arises from several measurable dimensions:

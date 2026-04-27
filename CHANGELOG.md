@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-27
+
+### Changed
+- **Cython skip-strategy revised** (`commands/explore.md` Code Generation Strategy section). Calibrated against a comprehensive uvloop 0.22.1 review (`reports/uvloop_v3/`) where every skipped agent was evaluated with one naive pass:
+  - **`parity-checker` moved OUT of the Cython skip list**: its `.pyi`-vs-`.pyx` adapted-scope check found 1 FIX HIGH (`sock_recvfrom`/`sock_sendto`/`sock_recvfrom_into` advertised in stub but raise NotImplementedError) + 1 CONSIDER that no other agent in the toolkit can find. No other agent reads `.pyi` stubs.
+  - **`error-path-analyzer`, `null-safety-scanner`, `pyerr-clear-auditor`, `refcount-auditor`** confirmed as skip-by-default (validated zero FIX-class loss on uvloop).
+  - **`module-state-checker`, `c-complexity-analyzer`, `version-compat-scanner`, `stable-abi-checker`** moved to a new "run on Cython for deep-effort reviews" tier — skip by default, but produce real CONSIDER/POLICY findings on Cython projects when invoked (~100 cached-import subinterpreter blocker, .pyx-source-level complexity refactors, dead version guards, abi3 feasibility assessment).
+
+### Added
+- **Cython-mode sections in 5 agent prompts** documenting what each agent can find on Cython projects when not skipped:
+  - `agents/parity-checker.md`: adapted scope (`.pyi` ↔ `.pyx` method-set parity, stdlib-equivalent semantics, twin-class divergence, public API/docs parity) — primary check on Cython.
+  - `agents/module-state-checker.md`: cached `static PyObject*` imports outside module state, module-level `cdef` C globals, lazy-init flags, GC traverse/clear coverage, subinterpreter posture.
+  - `agents/c-complexity-analyzer.md`: walk `.pyx` source-level complexity directly (do not use C-level metrics on Cython codegen), identify maintainer-visible refactor targets.
+  - `agents/version-compat-scanner.md`: hand-written C in `includes/*.h`, dead version guards, private-API `_Py_*` reimplementations, Cython 4 readiness.
+  - `agents/stable-abi-checker.md`: distinguish maintainer abi3 claim from Cython runtime opt-in (`cython_limited_api=True`), audit hand-written C macro use, produce per-project feasibility assessment.
+- **`type_stubs` field in `discover_extension.py` output** — lists `.pyi` files in the project, signaling parity-checker that Cython mode is applicable. Skips `build/`, `dist/`, `__pycache__/` and hidden directories. Three new tests in `test_discover_extension.py`.
+
+### Notes
+- The skip-strategy revision applies to invocations through `/cext-review-toolkit:explore`. For deep-effort reviews on Cython projects, the four "deep-effort tier" agents can be explicitly listed.
+- Agent prompt Cython-mode sections include uvloop 0.22.1 reference findings as concrete calibration data, so future runs on similar Cython projects (libuv/libev/llhttp bindings, asyncio replacements, generic Cython-wrapped-C libraries) have a tested template to draw on.
+
 ## [0.4.1] - 2026-04-27
 
 ### Enhanced

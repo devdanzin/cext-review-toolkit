@@ -69,27 +69,32 @@ If no C extension source files are found, inform the user and suggest checking t
 
 ### Code Generation Strategy
 
-When `code_generation` is `"cython"` or `"mypyc"`, adapt the agent dispatch:
+When `code_generation` is `"cython"` or `"mypyc"`, adapt the agent dispatch. The strategy is calibrated against a comprehensive uvloop review (see `reports/uvloop_v3/final_report.md`) where every "skipped" agent was evaluated with one naive pass to verify the skip default produces no FIX-class loss.
 
-**Skip these agents** (95-100% false positive rate on generated code):
-- refcount-auditor (Cython/mypyc manage refcounts)
-- error-path-analyzer (generated error handling is mechanical)
-- null-safety-scanner (generated NULL checks use different patterns)
-- module-state-checker (answers are always "generator limitation")
-- stable-abi-checker (generated code doesn't target stable ABI)
-- version-compat-scanner (generated code handles version compat at the generator level)
+**Always run on Cython** (FIX-class output, real bugs caught):
+- **type-slot-checker** — near-zero FP; finds real bugs in dealloc, partial-init paths, INCREF ordering, `@cython.no_gc_clear` pair breaks. (uvloop: 1 FIX HIGH `_UDPSendContext.new`; 4 CONSIDER on SSLProtocol pair, raise-in-dealloc, UVRequest pin)
+- **gil-discipline-checker** — finds non-atomic FT-counter holdouts, fork-handler globals, freelist races. (uvloop: 4 CONSIDER on FT-readiness gaps)
+- **resource-lifecycle-checker** — finds libuv handle leaks, partial-init cleanup gaps, FD-window leaks. (uvloop: 2 FIX HIGH on `Loop.__dealloc__`, `_StreamWriteContext.new`; 4 CONSIDER on twin sites)
+- **git-history-analyzer** — finds fix-completeness gaps, regression dates, twin-class fix asymmetry. (uvloop: 1 FIX HIGH on 25-site atomic-counter gap)
+- **parity-checker** — adapted Cython mode reads `.pyi` stubs to find advertised-but-unimplemented APIs. **No other agent reads `.pyi`.** (uvloop: 1 FIX HIGH `sock_recvfrom`/`sock_sendto`/`sock_recvfrom_into` raise NotImplementedError but `.pyi` advertises them; 1 CONSIDER `sendfile`/`sock_sendfile` undocumented gap)
 
-**Keep these agents** (still valuable on generated code):
-- type-slot-checker (near-zero FP, finds real bugs in generated dealloc/traverse)
-- gil-discipline-checker (GIL issues can exist in Cython `nogil` blocks)
-- c-complexity-analyzer (generated code complexity is informational)
-- git-history-analyzer (always valuable — finds bugs via historical patterns)
+**Skip by default on Cython** (95-100% FP rate from generator-emitted patterns; validated zero FIX-class loss):
+- **refcount-auditor** — Cython runtime `__Pyx_INCREF`/`__Pyx_DECREF` are noise. Maintainer-written manual `Py_INCREF`/`Py_DECREF` patterns ARE catchable but type-slot-checker covers them in factory-method audits. (uvloop eval: 0 FIX, 1 CONSIDER overlapping with kept agents)
+- **error-path-analyzer** — generated `goto __PyX_L*_error;` cleanup is mechanical. (uvloop eval: 0 FIX, 1 trivial CONSIDER)
+- **null-safety-scanner** — Cython's `if (unlikely(!__pyx_v_X))` patterns are mechanical. (uvloop eval: 0 FIX, 1 LOW CONSIDER)
+- **pyerr-clear-auditor** — Cython runtime `PyErr_Clear` calls are noise; maintainer-written ones in `.pyx` are rare and other agents catch the analog. (uvloop eval: 0 findings)
+
+**Run on Cython for deep-effort reviews** (low FIX yield but unique CONSIDER/POLICY surface):
+- **module-state-checker** — finds `static PyObject*` cached imports outside module state, module-level `cdef` C globals, subinterpreter blockers. Skip default works for FIX-only reviews; deep reviews benefit. (uvloop eval: 1 CONSIDER `stdlib.pxi` ~100 cached imports; subinterpreter assessment)
+- **c-complexity-analyzer** — adapt to walk `.pyx` indent structure rather than C-level (Cython codegen artifacts inflate C-level metrics). Finds maintainer-visible refactor targets. (uvloop eval: 3 CONSIDER on `Loop.create_server`, `__convert_pyaddr_to_sockaddr`, `Loop.create_connection`)
+- **version-compat-scanner** — Cython 4 readiness, deprecated directives, dead `PY_VERSION_HEX` guards in hand-written `includes/*.h`, private-API `_Py_*` reimplementations. (uvloop eval: 1 CONSIDER dead guard, 1 POLICY `_Py_RestoreSignals` reimplementation)
+- **stable-abi-checker** — distinguish maintainer abi3 claim from Cython runtime opt-in (`cython_limited_api=True`); audit hand-written C for non-stable macros; produce feasibility assessment. (uvloop eval: 1 POLICY abi3 not feasible due to libuv coupling)
 
 **For `"pybind11"`**: Run all agents normally (pybind11 code is closer to hand-written).
 
 **For `"mixed"`**: Run all agents but note in the prompt which files are generated so agents can adjust their triage expectations.
 
-Tell agents what code generation tool is in use so they can calibrate their confidence levels and focus on patterns specific to that generator.
+When dispatching kept agents on a Cython project, **tell each agent the code-generation tool, point to `reports/<extension>_v?/preflight/generated_code_map.md` if it exists, and ask them to apply Cython-mode triage** (the agent prompts have a "Cython-mode" section documenting what survives the generator filter). For deep-effort reviews, also pass the `cython_kept_agents.md` playbook reference if available.
 
 ### Phase 0.5: External Tool Baseline (Optional)
 

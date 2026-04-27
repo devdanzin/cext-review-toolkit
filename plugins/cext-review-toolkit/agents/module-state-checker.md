@@ -18,6 +18,25 @@ If `reports/<extension>_v1/preflight/generated_code_map.md` exists, **read it be
 
 If no preflight exists, proceed normally.
 
+## Cython mode (deep-effort runs)
+
+You are SKIPPED BY DEFAULT on Cython projects (low FIX yield from generator-emitted module init). When invoked on a Cython project for a deep-effort review, switch to the **Cython-adapted scope** — your standard PEP 489 multi-phase init checks are mostly handled by Cython's codegen; instead look for module-state issues that survive that filter:
+
+1. **Module-level `static PyObject*` cached imports outside module state** — Cython projects commonly use `.pxi` include files (e.g. `includes/stdlib.pxi`) declaring `cdef object some_module = None` followed by lazy initialization in module init. These compile to `static PyObject*` at file scope, NOT registered in the `__pyx_m_traverse` / `__pyx_m_clear` set. They are subinterpreter blockers and cycle-collection blind spots. **Reference**: uvloop `includes/stdlib.pxi:28-167` declares ~100 such cached imports. Find all `.pxi` files and audit them.
+2. **Module-level `cdef` C globals** — search for `cdef <T> NAME` at module scope (not inside any class/function). These are pure C globals, never module-state, never freed. Examples from uvloop: `MAIN_THREAD_ID`, `MAIN_THREAD_ID_SET`, `__forkHandler` in `includes/fork_handler.h`. Often subinterpreter blockers.
+3. **Module-level `static <ClassType>*` pointers** — e.g. `static Loop* __forking_loop` at uvloop loop.pyx:3361. Same concerns as #2.
+4. **Lazy-init flags** — `__atfork_installed`, `__mem_installed`, etc. Test-and-set on module-level flags is FT-fragile (overlap with gil-discipline-checker, but the module-state angle is the lifecycle, not the race).
+5. **GC traverse/clear coverage** — Cython 3.2+ generates `__pyx_m_traverse`/`__pyx_m_clear` automatically for module-state-converted projects. Verify the `cdef object` declarations at module scope are visited; verify `cdef <PyType>` declarations are visited via the heap-type infrastructure.
+6. **Subinterpreter posture** — check the `Py_mod_multiple_interpreters` slot in the generated `.c`. `Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED` is the correct posture if any of #1-#3 apply; record this as POLICY rather than FIX.
+7. **`.pxd` cimport'd module state** — if the project has `cimport` of another module's `cdef object` declarations (rare), audit that the cross-module state is per-interpreter.
+
+For each finding, classify:
+- **CONSIDER** — surfacing the global as a subinterpreter blocker or cycle/reload concern.
+- **POLICY** — when the maintainer's `Py_mod_multiple_interpreters` posture is consistent with the globals (they've documented the trade-off).
+- **FIX** — only if you find a global that's mutated unsynchronized AND `freethreading_compatible=True` is asserted (overlap with gil-discipline-checker, but distinct angle).
+
+If nothing substantive: "Cython mode: no module-state issues beyond Cython codegen pattern."
+
 ## Key Concepts
 
 Module state management in C extensions has evolved:

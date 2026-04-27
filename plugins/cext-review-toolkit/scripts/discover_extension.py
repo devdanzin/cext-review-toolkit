@@ -78,8 +78,8 @@ def _detect_setup_py(root: Path) -> list[dict] | None:
     # Pattern: Extension("name", sources=[...])  or  Extension("name", [...])
     ext_pattern = re.compile(
         r'Extension\s*\(\s*["\']([^"\']+)["\']\s*,\s*'
-        r'(?:sources\s*=\s*)?'
-        r'\[([^\]]*)\]',
+        r"(?:sources\s*=\s*)?"
+        r"\[([^\]]*)\]",
         re.DOTALL,
     )
     for m in ext_pattern.finditer(content):
@@ -87,11 +87,13 @@ def _detect_setup_py(root: Path) -> list[dict] | None:
         sources_text = m.group(2)
         # Extract quoted filenames.
         source_files = re.findall(r'["\']([^"\']+)["\']', sources_text)
-        extensions.append({
-            "module_name": mod_name,
-            "source_files": source_files,
-            "detection_method": "setup_py",
-        })
+        extensions.append(
+            {
+                "module_name": mod_name,
+                "source_files": source_files,
+                "detection_method": "setup_py",
+            }
+        )
 
     return extensions if extensions else None
 
@@ -113,23 +115,25 @@ def _detect_pyproject_toml(root: Path) -> list[dict] | None:
     if "tool.setuptools.ext-modules" in content or "ext-modules" in content:
         # Parse ext-modules entries: [[tool.setuptools.ext-modules]]
         ext_pattern = re.compile(
-            r'\[\[tool\.setuptools\.ext-modules\]\]\s*\n(.*?)(?=\n\[|\Z)',
+            r"\[\[tool\.setuptools\.ext-modules\]\]\s*\n(.*?)(?=\n\[|\Z)",
             re.DOTALL,
         )
         for m in ext_pattern.finditer(content):
             block = m.group(1)
             name_m = re.search(r'name\s*=\s*"([^"]+)"', block)
-            sources_m = re.search(r'sources\s*=\s*\[([^\]]*)\]', block)
+            sources_m = re.search(r"sources\s*=\s*\[([^\]]*)\]", block)
             if name_m:
                 mod_name = name_m.group(1)
                 source_files = []
                 if sources_m:
                     source_files = re.findall(r'"([^"]+)"', sources_m.group(1))
-                extensions.append({
-                    "module_name": mod_name,
-                    "source_files": source_files,
-                    "detection_method": "pyproject_toml",
-                })
+                extensions.append(
+                    {
+                        "module_name": mod_name,
+                        "source_files": source_files,
+                        "detection_method": "pyproject_toml",
+                    }
+                )
 
     # Check for meson-python
     if "tool.meson-python" in content or "meson-python" in content:
@@ -173,11 +177,13 @@ def _detect_meson_build(root: Path) -> list[dict] | None:
         mod_name = m.group(1)
         sources_text = m.group(2)
         source_files = re.findall(r"'([^']+)'", sources_text)
-        extensions.append({
-            "module_name": mod_name,
-            "source_files": source_files,
-            "detection_method": "meson_build",
-        })
+        extensions.append(
+            {
+                "module_name": mod_name,
+                "source_files": source_files,
+                "detection_method": "meson_build",
+            }
+        )
 
     return extensions if extensions else None
 
@@ -201,7 +207,7 @@ def _detect_cmake(root: Path) -> list[dict] | None:
         (r"Python3_add_library", "cmake_python3"),
     ]:
         pat = re.compile(
-            pattern_name + r'\s*\(\s*(\w+)\s+(.*?)\)',
+            pattern_name + r"\s*\(\s*(\w+)\s+(.*?)\)",
             re.DOTALL,
         )
         for m in pat.finditer(content):
@@ -210,14 +216,15 @@ def _detect_cmake(root: Path) -> list[dict] | None:
             # Sources are whitespace-separated, skip keywords like MODULE/SHARED.
             tokens = sources_text.split()
             source_files = [
-                t for t in tokens
-                if t.endswith((".c", ".cpp", ".cxx", ".cc"))
+                t for t in tokens if t.endswith((".c", ".cpp", ".cxx", ".cc"))
             ]
-            extensions.append({
-                "module_name": mod_name,
-                "source_files": source_files,
-                "detection_method": method,
-            })
+            extensions.append(
+                {
+                    "module_name": mod_name,
+                    "source_files": source_files,
+                    "detection_method": method,
+                }
+            )
 
     return extensions if extensions else None
 
@@ -252,7 +259,7 @@ def _detect_python_h_fallback(root: Path) -> list[dict] | None:
                 content = f.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            m = re.search(r'PyMODINIT_FUNC\s+PyInit_(\w+)', content)
+            m = re.search(r"PyMODINIT_FUNC\s+PyInit_(\w+)", content)
             if m:
                 mod_name = m.group(1)
                 break
@@ -264,11 +271,13 @@ def _detect_python_h_fallback(root: Path) -> list[dict] | None:
             except ValueError:
                 rel_files.append(str(f))
 
-        extensions.append({
-            "module_name": mod_name,
-            "source_files": rel_files,
-            "detection_method": "python_h_include",
-        })
+        extensions.append(
+            {
+                "module_name": mod_name,
+                "source_files": rel_files,
+                "detection_method": "python_h_include",
+            }
+        )
 
     return extensions
 
@@ -284,7 +293,7 @@ def _scan_init_functions(root: Path, c_files: list[str]) -> dict[str, str]:
             content = full_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        m = re.search(r'PyMODINIT_FUNC\s+PyInit_(\w+)', content)
+        m = re.search(r"PyMODINIT_FUNC\s+PyInit_(\w+)", content)
         if m:
             init_funcs[rel_path] = f"PyInit_{m.group(1)}"
     return init_funcs
@@ -300,7 +309,7 @@ def _scan_limited_api(root: Path, c_files: list[str]) -> tuple[bool, str | None]
             content = full_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        m = re.search(r'#\s*define\s+Py_LIMITED_API\s+(0x[0-9A-Fa-f]+|\w+)?', content)
+        m = re.search(r"#\s*define\s+Py_LIMITED_API\s+(0x[0-9A-Fa-f]+|\w+)?", content)
         if m:
             version_val = m.group(1) if m.group(1) else None
             return True, version_val
@@ -389,9 +398,9 @@ def _detect_code_generation(root: Path, c_files: list[str]) -> str:
             except OSError:
                 has_hand_written = True
                 continue
-            if re.search(r'\bCPyDef_\w+|\bCPyStatic_\w+|\bCPyModule_\w+', content):
+            if re.search(r"\bCPyDef_\w+|\bCPyStatic_\w+|\bCPyModule_\w+", content):
                 has_mypyc = True
-            elif re.search(r'PYBIND11_MODULE\s*\(|py::class_', content):
+            elif re.search(r"PYBIND11_MODULE\s*\(|py::class_", content):
                 has_pybind11 = True
             else:
                 has_hand_written = True
@@ -448,8 +457,7 @@ def discover(target: str) -> dict:
                 source_paths.append(full)
                 all_c_files.add(sf)
         ext["header_files"] = [
-            str(h.relative_to(root))
-            for h in _find_h_files(root, source_paths)
+            str(h.relative_to(root)) for h in _find_h_files(root, source_paths)
         ]
 
     all_c_files_list = sorted(all_c_files)
@@ -466,6 +474,18 @@ def discover(target: str) -> dict:
     # Detect code generation tool.
     code_generation = _detect_code_generation(root, all_c_files_list)
 
+    # Detect type stubs (.pyi files). Their presence signals that parity-checker
+    # should use its Cython-mode `.pyi` ↔ `.pyx` method-set parity scope.
+    pyi_files = sorted(
+        str(p.relative_to(root))
+        for p in root.rglob("*.pyi")
+        if not any(
+            part.startswith(".")
+            or part in {"build", "dist", "__pycache__", "site-packages"}
+            for part in p.relative_to(root).parts
+        )
+    )
+
     return {
         "project_root": str(root),
         "scan_root": str(target_path),
@@ -477,6 +497,7 @@ def discover(target: str) -> dict:
         "total_c_files": total_c_files,
         "total_lines": total_lines,
         "code_generation": code_generation,
+        "type_stubs": pyi_files,
     }
 
 
