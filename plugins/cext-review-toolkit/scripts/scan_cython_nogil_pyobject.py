@@ -114,11 +114,26 @@ def determining_gil_scope(node, source: bytes) -> str | None:
     return None
 
 
+def is_fstring(node, source: bytes) -> bool:
+    """Tree-sitter-cython represents f-strings as a `string` node whose
+    `string_start` child has the `f` (or `F`/`fr`/`rf`) prefix. There is no
+    distinct `joined_str` node.
+    """
+    if node.type != "string":
+        return False
+    for c in node.children:
+        if c.type == "string_start":
+            prefix = u.get_text(c, source).lower()
+            # Strip the opening quote(s) and check for `f`
+            return prefix.startswith("f") or prefix.startswith("rf") or prefix.startswith("fr")
+    return False
+
+
 def candidate_kind(node, source: bytes) -> str | None:
     """If `node` is a Python-touching candidate, return a label; else None."""
     if node.type == "raise_statement":
         return "raise"
-    if node.type == "joined_str":
+    if node.type == "string" and is_fstring(node, source):
         return "f-string"
     if node.type in COMPREHENSION_TYPES:
         return node.type.replace("_", " ")
