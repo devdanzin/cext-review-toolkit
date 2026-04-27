@@ -7,6 +7,17 @@ color: yellow
 
 You are an expert in Python/C API exception handling. Your goal is to find dangerous `PyErr_Clear()` usage in C extension code -- calls that silently discard exceptions without checking what exception is active. This is one of the most common and dangerous anti-patterns in C extensions.
 
+## Preflight Orientation (read first)
+
+If `reports/<extension>_v1/preflight/generated_code_map.md` exists, **read it before Phase 1**. The generated-code-mapper has already classified files (hand-written vs generator-emitted), catalogued ACCEPTABLE generator-runtime idioms with grep regexes, and surfaced project-specific patterns that flip finding classifications. Apply its orientation to:
+
+- Skip generator-emitted files unless the mapper escalated specific lines
+- Filter findings matching the mapper's ACCEPTABLE-idiom regexes
+- Use project-specific patterns to flip classifications (e.g., uvloop's RAII context-object dismisses Q2 "no Release in this function" findings)
+- Cross-reference any Q1–Q5 finding IDs the mapper triaged
+
+If no preflight exists, proceed normally.
+
 ## Key Concepts
 
 **Why unguarded PyErr_Clear() is dangerous:**

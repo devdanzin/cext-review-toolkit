@@ -6,7 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-27
+
 ### Added
+- **Generated-code-mapper agent** (`plugins/cext-review-toolkit/agents/generated-code-mapper.md`): a Phase-0 orientation specialist that runs FIRST in every explore on a code-generator-using extension (Cython, pybind11, nanobind, custom codegen). Produces `reports/<extension>_v1/preflight/generated_code_map.md` containing a file-classification table, ACCEPTABLE-idiom regex catalogue, project-specific structural patterns, and AST-script-finding triage hints. Validated on cymem (126 lines), uvloop (132 lines), and blosc2 (174 lines): all hand-verification hints confirmed via source-reading; novel patterns surfaced (cymem's `Address.__init__` reinit-leak; uvloop's libuv-callback architecture and RAII context-object pattern; blosc2's F11 line-level confirmation).
+- **Cython AST scanner suite** (`plugins/cext-review-toolkit/scripts/`):
+  - `cython_ast_utils.py` — shared parser + walker + Cython-specific structural helpers built on tree-sitter-cython (devdanzin/tree-sitter-cython@b2f6fd0 fork closes 19 grammar gaps from upstream b0o)
+  - `scan_cython_cdef_int_except.py` (Q1) — silent-noexcept on `cdef int` callbacks (the F-cluster blosc2 pattern; 15-site exact match on blosc2 ground truth)
+  - `scan_cython_buffer_protocol.py` (Q2) — `PyObject_GetBuffer` not paired with `PyBuffer_Release` in `try/finally` (HIGH/MEDIUM tiers based on whether any release exists)
+  - `scan_cython_pycapsule.py` (Q3) — `PyCapsule_New(ptr, name, NULL)` candidates (the F11 multi-wrap-leak pattern)
+  - `scan_cython_cinit_candidates.py` (Q4) — `__cinit__`/`__init__` field-reassignment reinit-leak (the cymem `Address.__init__` and blosc2 F3-F8 pattern; HIGH when RHS is a function call)
+  - `scan_cython_nogil_pyobject.py` (Q5) — Python-level operations (`raise`, `print`, f-strings, comprehensions) inside `nogil` scopes without `with gil:` re-acquisition
+- **Cython playbook** (`plugins/cext-review-toolkit/data/playbooks/cython.md`): 11-section orientation reference covering Cython 3.0/3.1/3.2/3.3+, ACCEPTABLE-idiom table (12 grep regexes), 7 bug-pattern subsections (silent-noexcept, `__cinit__`/`__init__`, buffer protocol, PyCapsule, nogil-touches-GIL, FT status, `__dealloc__`-holds-GIL), project-specific patterns calibrated against blosc2 + uvloop, version-difference matrix, prompt-fragment template for downstream agents.
+- **Preflight directive** added to all 13 downstream audit-agent prompts (refcount-auditor, error-path-analyzer, gil-discipline-checker, null-safety-scanner, module-state-checker, type-slot-checker, stable-abi-checker, version-compat-scanner, pyerr-clear-auditor, resource-lifecycle-checker, parity-checker, c-complexity-analyzer, git-history-analyzer): each instructs the agent to read `reports/<extension>_v1/preflight/generated_code_map.md` before Phase 1 if it exists, and apply its file classification, idiom filters, and project-specific patterns to triage findings. Closes the major false-positive vector observed during validation (uvloop's RAII context-object pattern, blosc2's reference-template-driven Q2 triage).
+
+### Notes
+- Q4/Q5 require the devdanzin tree-sitter-cython fork: `pip install git+https://github.com/devdanzin/tree-sitter-cython.git@fix/grammar-gaps`. The upstream b0o repo has 19 grammar gaps that block clean parsing of real-world .pyx files; the fork's `fix/grammar-gaps` branch (commit b2f6fd0) closes all of them with zero regressions on a 51-file calibration corpus.
+
+### Carried over from prior session (still in [Unreleased])
 - **Reproducer catalog T24 + T25** (carried over from prior session): Technique 24 (RSS growth monitoring for leaks invisible to tracemalloc — confirmed on couchbase-python-client `pycbc_streamed_result` 786 B/cycle and `pycbc_hdr_histogram.__init__` 4.5 KB/re-init); Technique 25 (SystemError probe for PyCFunction contract violations — confirmed on couchbase-python-client `_core` with 8 SystemError observations). (#50)
 - **Reproducer catalog T26 — Cyclic-GC threshold coercion** (#50): `gc.set_threshold(1, 1, 1)` forces gen-0 collect on every tracked allocation, turning timing-dependent `tp_traverse` / `tp_clear` races during partial init into deterministic SIGSEGVs on iteration 0 or 1. Confirmed on frozendict 2.4.7 F12 subclass GC UnTrack gap (5/5 deterministic across runs).
 - **Reproducer catalog T27 — Subprocess-isolated dense OOM sweep** (#50): launch each target code path in its own subprocess with libfiu `LD_PRELOAD` + `PYTHONMALLOC=malloc` so SIGSEGVs in one path don't kill the driver; classify by exit code (139=SEGV, 134=ABRT, 10=clean MemoryError). Complements T23 (surgical) and T18 (CPython-allocator). Confirmed on frozendict 2.4.7 F7+F8 — 4 construction paths × 30 offsets, all 120 runs SIGSEGV.
