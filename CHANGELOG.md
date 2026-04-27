@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Enhanced
+- **Q4 (`scan_cython_cinit_candidates.py`) gains Shape B detection** (#53): the v0.4.0 Q4 only caught the cymem-shape (`__cinit__` and `__init__` both assigning the same field). Production-agent verification on blosc2 surfaced this as a script gap — the F3 (`SChunk`) and F4 (`NDArray`) reinit-leaks have a different shape: a `cdef <T>* field` declaration, an `__init__` that allocates into it without a free guard, and a `__dealloc__` that frees it. No `__cinit__` is involved. Q4 now applies a second detection pass that triggers on this pointer-field shape and emits FIX HIGH. Validated: catches `SChunk.__init__` (blosc2_ext.pyx:1523) and `NDArray.__init__` (blosc2_ext.pyx:3415), correctly skips `vlmeta` (no `__dealloc__` → non-owning view) and `slice_flatter` (memoryview fields, not raw pointers); cymem `Address.__init__` (cymem.pyx:185) still caught via Shape A with no double-emit. Findings now carry a `details.shape` discriminator (`"overlap"` for Shape A, `"pointer_field"` for Shape B).
+
 ## [0.4.0] - 2026-04-27
 
 ### Added
