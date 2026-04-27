@@ -18,6 +18,35 @@ If `reports/<extension>_v1/preflight/generated_code_map.md` exists, **read it be
 
 If no preflight exists, proceed normally.
 
+## Cython mode (deep-effort runs)
+
+You are SKIPPED BY DEFAULT on Cython projects because the typical answer is "doesn't claim abi3 → assess feasibility (often Hard)". When invoked on a Cython project for a deep-effort review, the answer is more nuanced — Cython has its OWN abi3 mode that's separate from the maintainer's claim:
+
+1. **Distinguish the two abi3 mechanisms** Cython projects can use:
+   - **Maintainer's `Py_LIMITED_API`** — defined directly in extension config (e.g. `Extension(..., py_limited_api=True)` or `define_macros=[('Py_LIMITED_API', '0x03070000')]`).
+   - **Cython's `cython_limited_api=True`** — passed to `cythonize(..., cython_limited_api=True)` or via `language_level=3` + `--3limited` flag. Cython 3.0+ supports this.
+   - **Both must be set** for an end-to-end abi3 build. Neither alone is enough.
+
+2. **Verify the artifact name** — abi3 builds produce `*.abi3.so`, not the versioned `*.cpython-3XY-*.so`. Check the build artifact path; if it's versioned, abi3 is NOT in effect regardless of what the source might claim.
+
+3. **Audit hand-written C in `includes/*.h`** for stable-ABI compatibility (this is the small-but-real surface):
+   - Macro use of `PyBytes_AS_STRING`, `Py_SIZE`, `PyTuple_GET_ITEM`, etc. — these are NOT in the limited API. Often deliberate for performance hot paths. **Reference**: uvloop uses `PyBytes_AS_STRING` + `Py_SIZE` in stream.pyx:158-159,367-368 (hot write path).
+   - Direct struct field access (`ob_refcnt`, `tp_name`, etc.) — never in limited API.
+   - Private `_Py_*` symbols — never in limited API. **Reference**: uvloop `compat.h:88-105` reimplements `_Py_RestoreSignals` locally; the symbol becoming private blocks abi3 entirely until removed.
+   - Version-conditional fork/signal/threading paths — `#if PY_VERSION_HEX >= 0x030B0000` style guards typically use APIs that vary across versions.
+
+4. **Cython runtime opt-in audit** — even if the maintainer adds `py_limited_api=True`, Cython 3.x must ALSO be told via `cython_limited_api=True`. Check `setup.py`'s `cythonize(...)` call AND any `pyproject.toml` `[tool.cython]` section.
+
+5. **Feasibility assessment template** for the report:
+   - **API surface**: list non-stable APIs used in `.pyx` (Cython's `cdef extern from "Python.h"` declarations) and `includes/*.h`. Cite each macro use.
+   - **Min Python version for abi3**: `PyMem_Raw*` since 3.13, `PyObject_GetBuffer` since 3.11, etc. — most uvloop-class APIs need 3.13 floor.
+   - **Operational blockers**: per-Python-minor wheels already produced (e.g. via libuv vendoring), version-conditional code paths, hot-path macro use that's deliberate.
+   - **POLICY recommendation**: typical answer for libuv/libev/llhttp-style native bindings is "abi3 not feasible due to vendored-native + per-minor wheel + hot-path macros." Document and revisit on Cython limited-API extension or when CPython stabilizes more APIs.
+
+6. **Reference**: uvloop 0.22.1 — POLICY abi3 not feasible due to (a) Cython runtime opt-in not set, (b) deliberate macro use, (c) version-conditional paths PY39/PY311/PY313 at loop.pyx:51-53, (d) libuv vendoring already producing per-minor wheels.
+
+If the project IS abi3-claimed, run the standard verification steps below — but verify the `.abi3.so` artifact actually exists, not just the `Py_LIMITED_API` macro.
+
 ## Key Concepts
 
 Python provides two levels of API restriction:

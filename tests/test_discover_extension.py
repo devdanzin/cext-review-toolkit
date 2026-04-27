@@ -16,7 +16,9 @@ class TestDiscoverExtension(unittest.TestCase):
             sources='["src/myext.c"]',
             python_requires=">=3.9",
         )
-        with TempExtension({"src/myext.c": MINIMAL_EXTENSION}, setup_py=setup_py) as root:
+        with TempExtension(
+            {"src/myext.c": MINIMAL_EXTENSION}, setup_py=setup_py
+        ) as root:
             result = discover.discover(str(root))
             self.assertGreaterEqual(len(result["extensions"]), 1)
             ext = result["extensions"][0]
@@ -42,7 +44,7 @@ class TestDiscoverExtension(unittest.TestCase):
 
     def test_detect_limited_api(self):
         """Py_LIMITED_API define detected."""
-        code = '#define Py_LIMITED_API 0x030A0000\n' + MINIMAL_EXTENSION
+        code = "#define Py_LIMITED_API 0x030A0000\n" + MINIMAL_EXTENSION
         with TempExtension({"myext.c": code}) as root:
             result = discover.discover(str(root))
             self.assertTrue(result["limited_api"])
@@ -67,10 +69,14 @@ setup(
     ],
 )
 """
-        code_a = '#include <Python.h>\nPyMODINIT_FUNC PyInit_ext_a(void) { return NULL; }\n'
-        code_b = '#include <Python.h>\nPyMODINIT_FUNC PyInit_ext_b(void) { return NULL; }\n'
+        code_a = (
+            "#include <Python.h>\nPyMODINIT_FUNC PyInit_ext_a(void) { return NULL; }\n"
+        )
+        code_b = (
+            "#include <Python.h>\nPyMODINIT_FUNC PyInit_ext_b(void) { return NULL; }\n"
+        )
         with TempExtension(
-            {"a.c": code_a, "b.c": code_b, "b_util.c": '#include <Python.h>\n'},
+            {"a.c": code_a, "b.c": code_b, "b_util.c": "#include <Python.h>\n"},
             setup_py=setup_py,
         ) as root:
             result = discover.discover(str(root))
@@ -108,7 +114,7 @@ py.extension_module('myext', ['myext.c', 'util.c'])
 """
         files = {
             "myext.c": MINIMAL_EXTENSION,
-            "util.c": '#include <Python.h>\n',
+            "util.c": "#include <Python.h>\n",
             "meson.build": meson_content,
         }
         with TempExtension(files) as root:
@@ -131,13 +137,50 @@ py.extension_module('myext', ['myext.c', 'util.c'])
 
     def test_total_c_files_count(self):
         """total_c_files counts all .c files found."""
-        with TempExtension({
-            "a.c": '#include <Python.h>\n',
-            "b.c": '#include <Python.h>\n',
-            "lib/c.c": '#include <Python.h>\n',
-        }) as root:
+        with TempExtension(
+            {
+                "a.c": "#include <Python.h>\n",
+                "b.c": "#include <Python.h>\n",
+                "lib/c.c": "#include <Python.h>\n",
+            }
+        ) as root:
             result = discover.discover(str(root))
             self.assertEqual(result["total_c_files"], 3)
+
+    def test_type_stubs_detected(self):
+        """type_stubs lists .pyi files for parity-checker Cython mode."""
+        with TempExtension(
+            {
+                "myext.c": "#include <Python.h>\n",
+                "myext.pyi": "def foo() -> int: ...\n",
+                "subpkg/other.pyi": "def bar() -> str: ...\n",
+            }
+        ) as root:
+            result = discover.discover(str(root))
+            self.assertIn("type_stubs", result)
+            self.assertEqual(
+                sorted(result["type_stubs"]),
+                ["myext.pyi", "subpkg/other.pyi"],
+            )
+
+    def test_type_stubs_empty_when_none(self):
+        """type_stubs is an empty list when no .pyi files exist."""
+        with TempExtension({"myext.c": "#include <Python.h>\n"}) as root:
+            result = discover.discover(str(root))
+            self.assertEqual(result["type_stubs"], [])
+
+    def test_type_stubs_skips_build_dirs(self):
+        """type_stubs ignores .pyi files inside build/dist/__pycache__."""
+        with TempExtension(
+            {
+                "real.pyi": "x: int\n",
+                "build/generated.pyi": "y: int\n",
+                "dist/old.pyi": "z: int\n",
+                "__pycache__/cached.pyi": "w: int\n",
+            }
+        ) as root:
+            result = discover.discover(str(root))
+            self.assertEqual(result["type_stubs"], ["real.pyi"])
 
 
 class TestCodeGenerationDetection(unittest.TestCase):
@@ -157,7 +200,9 @@ class TestCodeGenerationDetection(unittest.TestCase):
 PyMODINIT_FUNC PyInit_myext(void) { return NULL; }
 """
         setup_py = SETUP_PY_TEMPLATE.format(
-            name="myext", sources='["myext.c"]', python_requires=">=3.9",
+            name="myext",
+            sources='["myext.c"]',
+            python_requires=">=3.9",
         )
         with TempExtension({"myext.c": cython_code}, setup_py=setup_py) as root:
             result = discover.discover(str(root))
@@ -166,7 +211,9 @@ PyMODINIT_FUNC PyInit_myext(void) { return NULL; }
     def test_cython_detection_from_pyx(self):
         """Cython detected from .pyx file presence."""
         setup_py = SETUP_PY_TEMPLATE.format(
-            name="myext", sources='["myext.c"]', python_requires=">=3.9",
+            name="myext",
+            sources='["myext.c"]',
+            python_requires=">=3.9",
         )
         with TempExtension(
             {"myext.c": MINIMAL_EXTENSION, "myext.pyx": "# cython source"},
@@ -185,7 +232,9 @@ PyObject *CPyDef_my_function(void) { return NULL; }
 PyMODINIT_FUNC PyInit_myext(void) { return NULL; }
 """
         setup_py = SETUP_PY_TEMPLATE.format(
-            name="myext", sources='["myext.c"]', python_requires=">=3.9",
+            name="myext",
+            sources='["myext.c"]',
+            python_requires=">=3.9",
         )
         with TempExtension({"myext.c": mypyc_code}, setup_py=setup_py) as root:
             result = discover.discover(str(root))
@@ -201,7 +250,9 @@ PYBIND11_MODULE(myext, m) {
 }
 """
         setup_py = SETUP_PY_TEMPLATE.format(
-            name="myext", sources='["myext.cpp"]', python_requires=">=3.9",
+            name="myext",
+            sources='["myext.cpp"]',
+            python_requires=">=3.9",
         )
         with TempExtension({"myext.cpp": pybind_code}, setup_py=setup_py) as root:
             result = discover.discover(str(root))

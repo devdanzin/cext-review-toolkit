@@ -18,6 +18,41 @@ If `reports/<extension>_v1/preflight/generated_code_map.md` exists, **read it be
 
 If no preflight exists, proceed normally.
 
+## Cython mode (deep-effort runs)
+
+You are SKIPPED BY DEFAULT on Cython projects because the standard scope (deprecated CPython APIs, version-guarded `#if PY_VERSION_HEX` blocks, pythoncapi-compat opportunities) is mostly handled by Cython's runtime and codegen. When invoked on a Cython project for a deep-effort review, switch to the **Cython-adapted scope** — there are real findings that survive the generator filter:
+
+1. **Hand-written C in `includes/*.h`** — this is the main audit surface. Cython projects commonly have `compat.h`, `fork_handler.h`, `debug.h` with hand-written `#if PY_VERSION_HEX` blocks. Audit these for:
+   - **Dead version guards** — if `pyproject.toml` declares `requires-python = '>=3.X'`, any `#if PY_VERSION_HEX < 0x030X0000` branch is dead. **Reference**: uvloop `compat.h:58-86` has dead `#if PY_VERSION_HEX < 0x03070100` for Python <3.7.1 (29 lines collapsible to ~14).
+   - **Private-API `_Py_*` reimplementations** — when CPython internalizes a previously-public API, projects re-implement it locally. This is a correct strategy but should be (a) version-conditional, (b) match CPython's contract per supported version, (c) have a comment citing the upstream change. **Reference**: uvloop `compat.h:88-105` reimplements `_Py_RestoreSignals` after CPython 3.13's python/cpython#106400. Local definition shadows the CPython symbol — correct strategy. Note that `python.pxd:31` mis-attributes the source as `Python.h` rather than the local file; flag as POLICY.
+   - **Direct CPython struct field access** — `tp_*`, `ob_*`, etc. — would block any future abi3 attempt; coordinate with stable-abi-checker.
+
+2. **Cython 4 readiness** — `setup.py` and `pyproject.toml` may pin `cython` differently:
+   - Check both files. Verify upper bound `<4` is set (e.g. `~=3.x`, `>=3,<4`).
+   - **Reference correction from uvloop eval**: `setup.py` pins `Cython~=3.0`, `pyproject.toml` pins `Cython~=3.1`; both upper-bounded `<4`. Cython 4 risk is LOW for projects that pin like this, NOT "unbounded" as a casual reading might suggest.
+   - Check `language_level=3` (current; not the deprecated `3str`).
+   - Check for deprecated Cython directives — see Cython 3.x → 4.0 migration docs.
+
+3. **Deprecated Cython directives** in `.pyx` files. Search for `# cython:` lines in all `.pyx`/`.pxd` and audit each directive:
+   - `language_level=2` → deprecated, must update to 3
+   - `c_string_encoding`, `c_string_type` deprecation paths
+   - `embedsignature`, `binding` interaction with introspection
+
+4. **Python 3.14+ specifics**:
+   - **t-strings** (PEP 750) — `Template` type may interact with Cython 3.3+ codegen
+   - **Free-threaded build** — `# cython: freethreading_compatible=True` directive
+   - **`sys.monitoring`** — replaces `sys.settrace` for some use cases (uvloop doesn't use either)
+   - **Immortal singletons** — refcount no longer changes for `None`/`True`/`False`/`Ellipsis`; usually transparent to Cython, but hand-written `Py_INCREF` on these is a no-op
+
+5. **pythoncapi-compat opportunity assessment** — typically LOW for Cython projects because Cython's runtime already abstracts most version differences. Only worth adopting if `includes/compat.h` has many `PY_VERSION_HEX` guards (uvloop has 1 — not worth the dependency).
+
+Tag findings:
+- **CONSIDER** for dead guards and migration cleanup
+- **POLICY** for private-API reimplementations and Cython upper-bound discussions
+- **FIX** rare; only if a deprecated API would actually break on a supported Python version
+
+If nothing substantive: "Cython mode: hand-written C is clean; Cython is bounded `<4`; no Python 3.14 issues."
+
 ## Key Concepts
 
 Python's C API changes across versions:

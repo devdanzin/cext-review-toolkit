@@ -18,6 +18,31 @@ If `reports/<extension>_v1/preflight/generated_code_map.md` exists, **read it be
 
 If no preflight exists, proceed normally.
 
+## Cython mode (NEW: skip-strategy disprover)
+
+If the project is a Cython binding (the preflight will say so), the standard "C vs Python fallback" parity surface is usually empty — Cython projects rarely ship dual implementations. **You are still NOT skipped on Cython projects.** Switch to the **adapted parity scope** below — you will likely find bugs no other agent in the toolkit can find.
+
+### Adapted Cython parity scope (apply IN ORDER)
+
+1. **`.pyi` ↔ `.pyx` method-set parity** — **highest-value check on Cython.** No other agent in the toolkit reads `.pyi` stubs. For each `.pyi` file in the project:
+   - Cross-reference every advertised method/function/attribute against the actual `.pyx` implementation.
+   - Flag entries advertised in `.pyi` with full signatures but **missing entirely from `.pyx`** (the stub author may have written them to fool mypy — happens when stdlib added an API uvloop hasn't yet implemented).
+   - Flag entries advertised in `.pyi` as functional but **raising `NotImplementedError` in `.pyx`**. This breaks any drop-in-replacement contract with stdlib.
+   - Flag entries with diverging signatures (different parameter types, return types, default values).
+   - **Reference**: uvloop 0.22.1 — `loop.pyi:289-296` advertises `sock_recvfrom`/`sock_recvfrom_into`/`sock_sendto` as functional, but `loop.pyx:2631-2639` raises `NotImplementedError`. Stdlib `BaseEventLoop` implements all three since Python 3.11. **FIX HIGH** — drop-in-replacement contract broken.
+
+2. **Stdlib-equivalent parity** — when a Cython project re-implements a stdlib API (uvloop ↔ asyncio; numexpr ↔ numpy; cassandra-driver ↔ stdlib socket): does error TYPE match (OSError vs BlockingIOError vs ConnectionError)? Does timeout precision match? Does callback ordering match? Does short-read/partial-write semantics match? Cite the specific stdlib reference for each divergence.
+
+3. **Twin-class divergence within the project** (parity in disguise): Cython projects often have parallel `cdef class` families that implement the same role (uvloop's UVStream/UVPipe/TCPTransport, _StreamWriteContext/_UDPSendContext). For each cluster:
+   - Map the public API surface across all twins
+   - Identify behavioral differences (error handling, refcount-pin order, partial-init cleanup, factory-method validation)
+   - Flag the divergent ones — the rule of thumb: when one is correct and another is buggy, the buggy one is likely a fix-completeness gap that didn't propagate when the second class was added years later.
+   - **Reference**: uvloop `_StreamWriteContext.new` (correct, 2016) vs `_UDPSendContext.new` (buggy, 2019) — same role, the udp version was added without inheriting the stream version's `Py_INCREF`-after-fallible discipline.
+
+4. **Public API documentation parity** — does `README.md`/docs claim feature support that `.pyx` doesn't honor? Does the `__all__` list in `__init__.py` map cleanly to actual exports? Does the maintainer's compatibility matrix match what the code does?
+
+If you find nothing in adapted scope: report "No parity findings; Cython project has no dual implementations and `.pyi`/stdlib/twin-class checks all clean."
+
 ## Why This Matters
 
 Extensions with dual implementations (C fast path + Python fallback) create a subtle attack surface:
