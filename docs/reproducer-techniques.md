@@ -1290,3 +1290,103 @@ Also probe `super(Frozen, instance).__init__(...)` — the descriptor protocol's
 **Confirmed on**:
 - frozendict 2.4.7 pure-Python fallback (`src/frozendict/_frozendict_py.py`, `class frozendict(dict)`) — 14 distinct mutation-bypass routes. Every user on Python 3.11+ (where no C source tree exists) hits this because the pure-Python fallback is inherited from dict. Reproducer: `reports/frozendict_v1/reproducers/repro_f4_parity_dict_setitem.py`. Observed: all 14 routes mutate a fresh `frozendict({"a": 1, "b": 2})`, including `dict.__setitem__`, `dict.update` (3 signatures), `dict.clear`, `super().__init__`, and a partial `dict.__init__(fd, ...)` that merges.
 
+---
+
+## Technique 30: `python -O` probe for assert-based validation
+
+**Triggers**: `assert` statements used as input validation in Python code (pure-Python or C-extension glue), or C extensions using `assert()` as argument validation. Both disappear under production-mode compilation.
+
+**Bug class**: Safety-critical validation that is silently stripped by the runtime's optimization mode. In Python, `python -O` replaces every `assert expr, msg` with a no-op. In C extensions, `assert()` expands to nothing when `NDEBUG` is defined (most release builds). Callers supplying bad inputs get no warning in production; execution proceeds with wrong values, wrong shapes, wrong dtypes, or wrong pointers. The worst case is memory corruption downstream (wrong numpy strides passed to C, NULL-post-assert dereferences).
+
+**How it works**: Run the same code twice — once under the default interpreter, once under `-O` — and diff the observable behavior. In the default mode you see a clean `AssertionError: ...`. Under `-O` you see either a successful-but-wrong return, a numpy/ctypes warning about silent data truncation, or a downstream error (segfault, GIL assertion, wrong-results silent corruption). The gap between the two runs is the attack surface.
+
+```python
+#!/usr/bin/env python3
+"""Diff normal vs -O runs to find assert-as-validation."""
+import subprocess, sys, textwrap
+
+SCRIPT = textwrap.dedent("""
+    from vtkmodules.util import numpy_support as ns
+    import numpy as np
+    try:
+        # Each call uses a kind of input that the module explicitly validates via `assert`.
+        r = ns.numpy_to_vtk(np.array([1+2j], dtype=np.complex128))
+        print(f'complex:   {type(r).__name__}   <- no error in {sys.argv[1]} mode')
+    except AssertionError as e:
+        print(f'complex:   AssertionError: {e!s:.60}')
+    try:
+        r = ns.numpy_to_vtk(np.zeros((2, 2, 2)))
+        print(f'3D:        {type(r).__name__}   <- no error in {sys.argv[1]} mode')
+    except AssertionError as e:
+        print(f'3D:        AssertionError: {e!s:.60}')
+""")
+
+for mode in ('debug', 'release'):
+    flags = [] if mode == 'debug' else ['-O']
+    r = subprocess.run([sys.executable, *flags, '-c', SCRIPT, mode],
+                       capture_output=True, text=True)
+    print(f'---- {mode} ({flags}) ----')
+    print(r.stdout, end='')
+```
+
+Expected output shape:
+```
+---- debug ([]) ----
+complex:   AssertionError: Complex numpy arrays cannot be converted to vtk ar
+3D:        AssertionError: Only arrays of dimensionality 2 or lower are allo
+---- release (['-O']) ----
+complex:   vtkTypeFloat64Array   <- no error in release mode
+3D:        vtkTypeFloat64Array   <- no error in release mode
+```
+
+The release-mode output is the bug: invalid inputs silently produce `vtkTypeFloat64Array` instances whose underlying C memory contains truncated complex values and wrong layouts for 3D inputs. That memory flows into VTK C++ and downstream crashes or silently wrong renders result.
+
+### For C extensions (`NDEBUG` / `assert()` in C)
+
+The analogous C-side issue is C code that does something like:
+```c
+static PyObject *foo(PyObject *self, PyObject *args) {
+    PyObject *arr;
+    if (!PyArg_ParseTuple(args, "O", &arr)) return NULL;
+    assert(PyArray_Check(arr));          /* <-- vanishes in release build */
+    assert(PyArray_NDIM(arr) < 3);       /* <-- vanishes in release build */
+    /* ... proceed assuming those assertions held ... */
+}
+```
+
+Release builds (most `pip install`-ed wheels) have `NDEBUG` defined by default, so those guards evaporate. Probe technique: build the extension twice (`-DDEBUG` vs default) and run the same bad-input script against each. Or scan the source with `grep -n 'assert(' ext.c | grep -E 'PyArray|PyList|PyDict|PyUnicode'` — any `assert()` that touches a user-controllable object or a return value is a candidate.
+
+### Gotchas
+
+1. **Not every `assert` is a bug**. Assertions guarding *internal invariants* (post-conditions on data the module itself just built) are correct — they document the invariant and help debug builds catch refactor drift. Only assertions guarding *external inputs* or *C-API return values* are security issues.
+2. **`-OO` also strips docstrings**. Don't let that mask an unrelated doctest failure; use `-O` unless you need the more aggressive mode.
+3. **Module-level `assert`s at import time** behave the same — a module that has `assert sys.version_info >= (3, 9)` at the top level silently passes import under `-O` on Python 3.8.
+4. **`sys.flags.optimize`** reports whether the interpreter is running with `-O` (value 1) or `-OO` (value 2). Use this if you want code paths that behave the same both ways: `if not __debug__: raise ValueError(...)`. (Python strips asserts using the `__debug__` flag; you can write your own runtime checks gated on the same flag but using `raise`.)
+5. **Downstream corruption may not be deterministic**. The same bad input might crash on one machine and silently succeed on another, depending on heap layout and the specific numpy build. Re-run under `valgrind`/`ASan` if triage needs a deterministic failure.
+
+### Fix recipe
+
+Replace every assertion used as input validation with an explicit raise:
+```python
+# BEFORE
+assert z.flags.contiguous, 'Only contiguous arrays are supported.'
+assert len(shape) < 3, 'Only 2D or lower arrays are allowed!'
+
+# AFTER
+if not z.flags.contiguous:
+    raise ValueError('Only contiguous arrays are supported.')
+if len(shape) >= 3:
+    raise ValueError('Only 2D or lower arrays are allowed!')
+```
+
+In C, use `Py_SET_TYPE`-style error-returning patterns, never `assert()` for things a user can cause.
+
+### When to use this
+
+- **Any Python library advertising correctness guarantees for numpy/bytes/string inputs**. `python -O` is a valid production-deployment flag; users will hit it.
+- **Any C extension before publishing a wheel**. Release wheels have `NDEBUG` by default; whatever the debug build catches via `assert()` is not catching anything in the wheel your users install.
+- **During code review** — grep for `^\s*assert ` in `.py` files and `assert(` in `.c`/`.cc` files over the scope. Each site needs a triage decision: internal invariant (OK) vs user-input validation (bug).
+
+**Confirmed on**:
+- VTK 9.6.1 `vtkmodules/util/numpy_support.py` — 4 asserts used as input validation on `numpy_to_vtk` / `vtk_to_numpy` (lines 134, 135, 137, 218). Under `python -O`: complex arrays silently cast to float (imaginary discarded); 3D arrays silently accepted; non-contiguous slices silently accepted. All three produce `vtkTypeFloat64Array` objects flowing into VTK C++ with either truncated or wrongly-laid-out memory. Reproducer: `reports/vtk_python_report_appendix.md` finding #20.
+
