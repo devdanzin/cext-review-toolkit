@@ -158,6 +158,14 @@ If `parallel` is specified, run agents within each group concurrently (at most `
 
 After all agents complete, perform deduplication, conflict resolution, and produce a unified summary.
 
+> **Before sharing this report externally** (filing issues, opening PRs, sending to a maintainer),
+> point the user at [`WORKING_WITH_MAINTAINERS.md`](../../../WORKING_WITH_MAINTAINERS.md). The
+> short version: a 50-finding report dropped on a maintainer who didn't ask for it is a 50-hour
+> homework assignment. Reach out first, ask what shape they want it in, and don't auto-file or
+> auto-PR. Security findings need responsible disclosure, not a public issue. The synthesis
+> below produces an internal artifact; the question of whether/how to share it with the
+> maintainer is a separate human-judgment step.
+
 #### Deduplication and Conflict Resolution
 
 1. **Merge overlapping findings**: When two agents flag the same file:line, merge them:
