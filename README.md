@@ -253,7 +253,7 @@ For thorough reviews, run R1 → R2 → R3 (the 2-naive + 1-informed methodology
 | File | Purpose |
 |------|---------|
 | **[WORKING_WITH_MAINTAINERS.md](WORKING_WITH_MAINTAINERS.md)** | **How to use what this tool produces in a way that helps maintainers rather than burdens them. Read first if you're using this on someone else's project.** |
-| [docs/reproducer-techniques.md](docs/reproducer-techniques.md) | Catalogue of reproducer techniques (29 numbered patterns) |
+| [docs/reproducer-techniques.md](docs/reproducer-techniques.md) | Catalogue of reproducer techniques (30 numbered patterns) |
 | [cext-review-toolkit-design.md](cext-review-toolkit-design.md) | Design document — architecture, scripts, agents, classification |
 
 ## Comparison with Sibling Projects
