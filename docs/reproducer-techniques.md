@@ -1389,4 +1389,101 @@ In C, use `Py_SET_TYPE`-style error-returning patterns, never `assert()` for thi
 
 **Confirmed on**:
 - VTK 9.6.1 `vtkmodules/util/numpy_support.py` — 4 asserts used as input validation on `numpy_to_vtk` / `vtk_to_numpy` (lines 134, 135, 137, 218). Under `python -O`: complex arrays silently cast to float (imaginary discarded); 3D arrays silently accepted; non-contiguous slices silently accepted. All three produce `vtkTypeFloat64Array` objects flowing into VTK C++ with either truncated or wrongly-laid-out memory. Reproducer: `reports/vtk_python_report_appendix.md` finding #20.
+- lxml 7.0.0a2 `classlookup.pxi` (lines 209/340/360) — `assert False, "Unknown node type"` in the element-class-lookup fallback. Cython gates the assert on `__pyx_assertions_enabled()` (the runtime `-O` flag); under `python -O` the guard is stripped and an unexpected node type falls through to `None` → `TypeError` downstream instead of a clear failure. (CONSIDER, not FIX: the branch is unreachable via the public API today — all node types that reach class-lookup are handled — so this is a latent-only gap.) Reproducer: `reports/lxml_v2/reproducers/tier1_gil_behavioral/`.
+
+---
+
+## Technique 31: Malloc-fault injection via `LD_PRELOAD` (libfiu-free)
+
+**Triggers**: error/cleanup paths reachable only when an allocation fails (`MemoryError`) — inside the extension *or* inside a foreign C library it links (libxml2/libxslt/zlib/sqlite/…) — on a host where **libfiu is not installed** (so Technique 23 is unavailable).
+
+**Bug class**: leaks and lock-deadlocks on OOM error paths. A C resource is allocated, or a lock is taken, and then a *fallible step* (very often another allocation) raises before the `try/finally` (or RAII owner) that would release it. On the raise, the resource leaks or — for a write lock — the lock is never released and every other thread that touches the object deadlocks. These paths are invisible to ordinary tests (allocations almost never fail in practice) yet are real and reachable under memory pressure.
+
+**How it works**: a self-contained `LD_PRELOAD` shim (`docs/mallocfault.c`) interposes `malloc`/`calloc`/`realloc`. It starts **disarmed** so it never disturbs interpreter startup; the test *arms* it (via a sentinel file the shim `stat()`s) around exactly the targeted call, then disarms. Controls (all read live): `MF_FAIL_AFTER N` (skip N eligible allocs), `MF_FAIL_EVERY K`, `MF_FAIL_COUNT C`, `MF_MIN_SIZE`/`MF_MAX_SIZE` (size window). For a resource buried inside a multi-allocation library routine — where a raw allocation index can't isolate the right `malloc` — pair it with an **event-arming counter** (`docs/libxmlcount.c`, a worked example): the counter wraps the library's create/free symbols, prints `new/free/leaked` totals at exit (direct leak proof, independent of RSS), and flips the fault sentinel at a precise C call boundary (`MF_ARM_ON_*`). The Python side uses `docs/mallocfault_harness.py`:
+
+```python
+# repro_NN.py — run as a parent that spawns its own armed child subprocess
+import sys
+sys.path.insert(0, "docs")
+from mallocfault_harness import run_isolated, arm, disarm, deadlock_probe, leak_probe
+
+def child():
+    from lxml import etree            # the extension under test
+    doc = etree.fromstring("<a/>").getroottree()
+    arm()                             # fault the very next eligible allocation
+    try:
+        do_the_operation(doc)         # the alloc inside here returns NULL -> MemoryError
+    except MemoryError:
+        pass
+    disarm()
+    # deadlock check from a SECOND thread (a leaked write lock blocks others, not us):
+    wedged = deadlock_probe(lambda: do_another_op(doc), timeout=6)
+    print("DEADLOCK" if wedged else "ok")
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "child":
+        child()
+    else:
+        r = run_isolated(__file__, python="<gil-or-ft-venv>/bin/python",
+                         extra_pythonpath="<repo>/src",
+                         mf_env={"MF_FAIL_AFTER": "0", "MF_FAIL_COUNT": "1"},
+                         use_counter=True, timeout=15)
+        print("timed_out(=deadlock):", r["timed_out"]); print(r["stderr"][-2000:])
+```
+
+Build the shims once: `gcc -shared -fPIC -O2 -o docs/mallocfault.so docs/mallocfault.c -ldl` (and likewise `libxmlcount.so`).
+
+**Two evidence shapes**:
+- **Deadlock** → the child subprocess **times out** (`run_isolated` returns `timed_out=True`). Because lxml's RW lock (and a parser `PyMutex`) is reentrant per-thread, a leaked write lock does *not* block the thread that leaked it — probe from a *second* thread.
+- **Leak** → either the counter prints `leaked=N-M > 0`, or `leak_probe()` shows monotonic RSS growth across iterations with a flat no-fault control (a leaked fixed-size C struct the allocator recycles is invisible to `tracemalloc` — see Technique 24 — and sometimes to RSS, which is why the counter is the stronger signal).
+
+**Gotchas**:
+1. **`dlsym` bootstrap recursion** — `dlsym(RTLD_NEXT, "calloc")` itself may call `calloc` during loader init. The shim serves those from a tiny static buffer until the real symbols resolve. Keep that guard if you adapt it.
+2. **`PYTHONMALLOC=malloc`** — small Python-object allocations go through pymalloc's arenas and never reach the interposed system `malloc`. Run the child with `PYTHONMALLOC=malloc` when the target allocation is small or when using the event-arming counter, so those allocations are interposable. (Trade-off: this also exposes Python's own allocations to faulting — arm tightly around the target.)
+3. **Pinpointing the exact internal alloc** — for large/distinct library allocations a raw `MF_FAIL_AFTER` index lands cleanly; for an allocation buried among many, use the event-arming counter to flip the sentinel at the call boundary instead of guessing an index.
+4. **Always isolate in a subprocess with a timeout** — a reproduced deadlock would otherwise hang the harness, and a crash would take it down.
+
+**vs Technique 23 (libfiu)**: libfiu needs no compile step and reaches more syscalls (`mmap`/`open`/…); this needs no libfiu install and the event-arming counter gives **precise per-call-boundary targeting** plus a direct leak counter. They are complementary — prefer libfiu when it's installed, reach for this when it isn't or when you need to fault one specific buried allocation.
+
+**When to use this**:
+- Any C/Cython extension that wraps a C library, before publishing — its OOM cleanup paths are the least-tested code it has.
+- When a review finds a "resource/lock acquired → fallible step → *then* `try/finally`" shape (the crown-jewel error-path bug) and you want to *prove* the leak/deadlock rather than argue the code path.
+
+**Confirmed on**:
+- lxml 7.0.0a2 — reproduced 6 OOM-triggered findings: write-lock deadlocks (`xpath.pxi:349`, `xslt.pxi:551`, parser `PyMutex` at `parser.pxi:739`) as subprocess timeouts, and handle leaks (`xslt.pxi:583` `xsltTransformContext` `leaked=150`; `xmlschema.pxi:84` `leaked=200`; `apihelpers.pxi:453` array leak +13 MB/20k) via the counter / RSS. The kit also *corrected* one finding: a cited raise site was unreachable because the callee is `cdef void … noexcept` (0 raises in 200 armed iterations). Reproducers: `reports/lxml_v2/reproducers/tier3_oom/` (`mallocfault.c`, `libxmlcount.c`, the harness, and seven `repro_NN_*.py`).
+
+---
+
+## Technique 32: Interpreting TSan signals on free-threaded (3.14t) builds
+
+**Triggers**: data-race findings in an extension that declares `Py_MOD_GIL_NOT_USED`, run under a TSan-instrumented free-threaded interpreter (cp313t/cp314t built with `-fsanitize=thread`).
+
+**Bug class**: shared mutable state (caches, registries, lazy-init singletons) mutated by a public API while other threads read it. The subtlety this technique addresses is that on CPython 3.14t the **manifestation depends on the container type**, so a naive "did TSan print a race?" check both **misses real bugs** and **misreads severity**.
+
+**Key insight — 3.14t made dict/list internals individually thread-safe** (per-object locking + atomic refcounting). Consequences for what you observe:
+
+| Racing structure | What TSan shows | What actually happens |
+|---|---|---|
+| **`dict`** (multi-step read-modify: check-then-set, iterate-then-evict) | **no TSan memory race** (the dict's own C structure is internally locked) | **logical** corruption: `RuntimeError: dictionary changed size during iteration`, `KeyError`, or silently wrong results |
+| **`list`** mutate-during-iterate | **clean TSan data race** | list internals raced; possible wrong results / corruption |
+| **freed object** (use-after-free) | **TSan heap-use-after-free** | memory-unsafe |
+| **adjacent non-container state** (e.g. the refcount of a `dict_items` view, a raw `int`/pointer field) | **TSan data race**, and may **crash the interpreter** | memory-unsafe; can trip a `gc_free_threading.c` refcount assertion |
+
+So **absence of a TSan line does not mean "safe"** — a dict-based race surfaces only as a Python-level exception or wrong output. And a "mere CONSIDER" dict race can escalate to an interpreter crash when it perturbs an *adjacent* refcount (not the dict itself). Always collect **both** TSan output **and** the child's Python-level exceptions/exit signal.
+
+**How to drive it**:
+- Make the structure **genuinely shared** across threads — a per-thread or per-object cache only races if the object itself is shared (e.g. a module-global singleton like `objectify.E`, or one element handed to many threads). Per-thread state (thread-local parsers) and per-object state that isn't shared will *correctly* not race.
+- For caches, use **many distinct keys** to force concurrent insert **and** eviction (the eviction path is usually the multi-step read-modify that corrupts).
+- Run writer and reader **concurrently** (8–16 threads), in an isolated subprocess, with `TSAN_OPTIONS="halt_on_error=0 history_size=4 second_deadlock_stack=1"`. Capture stderr (TSan) *and* the process exit (crash) *and* stdout (RuntimeError/KeyError counts).
+
+**Gotchas**:
+1. **TSan attributes the race to the atomic primitive** (`pyatomic_gcc.h:..._Py_atomic_load_ptr`) — recover the extension's own source frame from the stack trace / the Cython `/* "...":NNN */` provenance, not the SUMMARY line.
+2. **Benign last-writer-wins** lazy-inits (a `cdef X singleton = None` set on first use) may show no race and need none — don't over-report them.
+3. **A clean run is inconclusive unless the structure was actually shared** — verify your stress genuinely contends on the same object before concluding "not a race."
+
+**When to use this**:
+- Any review of a free-threading extension (`Py_MOD_GIL_NOT_USED`) on cp313t+/cp314t, when deciding whether a flagged shared-state finding is real and how severe it is.
+
+**Confirmed on**:
+- lxml 7.0.0a2 — the four manifestations all appeared in one review: ElementPath `_cache` (`elementpath.pxi:1017`) = **logical** corruption only (~34k `RuntimeError`/`KeyError`, **no** TSan line); objectify `_TYPE_CHECKS` **list** (`objectify.pyx:1254`) = clean TSan race (24); `ElementMaker._cache` (`objectify.pyx:1523`) = TSan **heap-use-after-free**; `_DEFAULT_NAMESPACE_PREFIXES` (`etree.pyx:156`) = TSan race **+ fatal interpreter crash** (`gc_free_threading.c` `refcount >= 0` assertion via the `dict_items` refcount). Reproducers: `reports/lxml_v2/reproducers/tier4_ft_tsan/`.
 
