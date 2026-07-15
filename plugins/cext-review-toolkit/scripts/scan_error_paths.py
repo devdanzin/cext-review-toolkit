@@ -57,6 +57,28 @@ _CLEANUP_APIS = {
     "free",
 }
 
+# APIs that return -1 on error and 0/1 otherwise ("tri-state" ints). Their
+# result MUST be checked with `< 0` before being used as a boolean, because
+# C's logical operators treat -1 as true -- so `x && PyObject_IsTrue(y)` or
+# `if (PyObject_IsTrue(y))` silently misreads the error case and can return a
+# result with a pending exception set (SystemError) or corrupt state.
+_TRISTATE_INT_APIS = {
+    "PyObject_IsTrue",
+    "PyObject_Not",
+    "PyObject_RichCompareBool",
+    "PyObject_IsInstance",
+    "PyObject_IsSubclass",
+    "PySequence_Contains",
+    "PyDict_Contains",
+    "PySet_Contains",
+    "PyMapping_HasKeyWithError",
+    "PyMapping_HasKeyStringWithError",
+    "PyObject_HasAttrWithError",
+    "PyObject_HasAttrStringWithError",
+}
+
+_COMPARISON_OPERATORS = {"<", ">", "<=", ">=", "==", "!="}
+
 
 def _check_missing_null_check(func, source_bytes, api_tables):
     """Find new-ref API calls whose result is used without NULL check."""
@@ -296,8 +318,7 @@ def _apis_that_cannot_clobber(api_tables: dict) -> set[str]:
 
     # Narrower int-returning list: dict of name → metadata.
     names.update(
-        k for k in api_tables.get("non_erroring_int_apis", {})
-        if not k.startswith("_")
+        k for k in api_tables.get("non_erroring_int_apis", {}) if not k.startswith("_")
     )
 
     return names
@@ -314,6 +335,131 @@ def _non_erroring_int_apis(api_tables: dict) -> set[str]:
     """
     entries = api_tables.get("non_erroring_int_apis", {})
     return {name for name in entries if not name.startswith("_")}
+
+
+def _outer_through_parens(node):
+    """Walk up past parenthesized_expression wrappers.
+
+    Returns (outer, parent): `outer` is the call node or its outermost
+    parenthesized wrapper; `parent` is that node's parent (or None).
+    """
+    cur = node
+    while cur.parent is not None and cur.parent.type == "parenthesized_expression":
+        cur = cur.parent
+    return cur, cur.parent
+
+
+def _operator_text(node, source_bytes) -> str:
+    """Return the operator token text of a binary/unary expression, or ''."""
+    op = node.child_by_field_name("operator")
+    return get_node_text(op, source_bytes) if op is not None else ""
+
+
+def _var_error_checked_after(var: str, after_text: str) -> bool:
+    """True if `var` is compared against the -1 error sentinel in `after_text`."""
+    return bool(
+        re.search(
+            r"\b" + re.escape(var) + r"\s*(?:<\s*0|==\s*-\s*1|!=\s*-\s*1|>=\s*0|>\s*0)"
+            r"|(?:<\s*0|==\s*-\s*1|>=\s*0)\s*[^;]*\b" + re.escape(var) + r"\b",
+            after_text,
+        )
+    )
+
+
+def _check_tristate_bool_confusion(func, source_bytes, api_tables):
+    """Find tri-state int APIs (-1 on error) used as booleans without a < 0 check.
+
+    APIs like PyObject_IsTrue return -1 on error and 0/1 otherwise. Using the
+    result directly in a boolean context (&&/||, a ! negation, an if/while/
+    ternary condition) -- or storing it without a `< 0` check -- silently
+    misreads the error (C treats -1 as true) and can return a result with a
+    pending exception (SystemError) or corrupt state.
+
+    Safe uses (no finding): the result is compared (`< 0`, `== -1`, `>= 0`, ...),
+    returned to the caller (error propagated), or assigned to a variable that is
+    later error-checked.
+    """
+    findings = []
+    body = func["body_node"]
+    body_text = get_node_text(body, source_bytes)
+    calls = find_calls_in_scope(body, source_bytes, api_names=_TRISTATE_INT_APIS)
+
+    for call in calls:
+        node = call["node"]
+        fn = call["function_name"]
+        _outer, parent = _outer_through_parens(node)
+        if parent is None:
+            continue
+
+        # SAFE: compared against a sentinel, or returned (propagated to caller).
+        if parent.type == "binary_expression":
+            if _operator_text(parent, source_bytes) in _COMPARISON_OPERATORS:
+                continue
+        if parent.type == "return_statement":
+            continue
+
+        # Inline boolean use without a comparison: classify the context first, so
+        # `x = a && Call()` reads as a logical-&& use rather than an assignment.
+        # &&/||/! are unambiguously wrong (high); a bare condition truthiness is
+        # slightly less certain (the value may be known non-erroring in context).
+        context = None
+        confidence = "medium"
+        if parent.type == "binary_expression":
+            op = _operator_text(parent, source_bytes)
+            if op in ("&&", "||"):
+                context, confidence = f"a logical '{op}' expression", "high"
+        elif parent.type == "unary_expression":
+            if _operator_text(parent, source_bytes) == "!":
+                context, confidence = "a '!' negation", "high"
+        elif parent.type in ("if_statement", "while_statement", "do_statement"):
+            # `parent` is the enclosing statement; the call is its condition.
+            context = f"an '{parent.type.split('_')[0]}' condition"
+        elif parent.type == "conditional_expression":
+            cond = parent.child_by_field_name("condition")
+            if cond is not None and cond.start_byte <= node.start_byte <= cond.end_byte:
+                context = "a ternary condition"
+
+        if context:
+            findings.append(
+                {
+                    "type": "tristate_bool_confusion",
+                    "file": "",
+                    "function": func["name"],
+                    "line": call["start_line"],
+                    "confidence": confidence,
+                    "detail": (
+                        f"{fn}() returns -1 on error, used directly in {context} "
+                        f"without a '< 0' check (C treats -1 as true)"
+                    ),
+                    "api_call": fn,
+                }
+            )
+            continue
+
+        # Otherwise: assigned to a variable that is never error-checked.
+        var = find_assigned_variable(node, source_bytes)
+        if var:
+            after = body_text[node.end_byte - body.start_byte :]
+            if _var_error_checked_after(var, after):
+                continue
+            findings.append(
+                {
+                    "type": "tristate_bool_confusion",
+                    "file": "",
+                    "function": func["name"],
+                    "line": call["start_line"],
+                    "confidence": "medium",
+                    "detail": (
+                        f"{fn}() returns -1 on error, but its result is assigned "
+                        f"to '{var}' and used without a '< 0' check (C treats -1 "
+                        f"as true)"
+                    ),
+                    "api_call": fn,
+                    "variable": var,
+                }
+            )
+
+    return findings
 
 
 def _check_unchecked_pyarg_parse(func, source_bytes, api_tables):
@@ -395,6 +541,7 @@ def analyze(target: str, *, max_files: int = 0) -> dict:
                 _check_return_without_exception,
                 _check_exception_clobbering,
                 _check_unchecked_pyarg_parse,
+                _check_tristate_bool_confusion,
             ):
                 for f in checker(func, source_bytes, api_tables):
                     f["file"] = rel

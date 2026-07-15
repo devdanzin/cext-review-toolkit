@@ -158,6 +158,71 @@ state_and_gc(PyObject *self, PyObject *obj)
 """
 
 
+# PyObject_IsTrue() returns -1 on error; used as an && operand, C reads -1 as
+# true (coveragepy tracer.c:987 / PR #2219 issue #2 shape).
+TRISTATE_LOGICAL_AND = """\
+#include <Python.h>
+
+static PyObject *
+in_logical_and(PyObject *self, PyObject *flag)
+{
+    int result = (self != NULL) && PyObject_IsTrue(flag);
+    if (result) {
+        Py_RETURN_TRUE;
+    }
+    Py_RETURN_FALSE;
+}
+"""
+
+# Result stored in an int and used as a bool with no `< 0` check (zstandard F36
+# shape).
+TRISTATE_ASSIGNED_UNCHECKED = """\
+#include <Python.h>
+
+static PyObject *
+stored_without_check(PyObject *self, PyObject *obj)
+{
+    int truth = PyObject_IsTrue(obj);
+    if (truth) {
+        Py_RETURN_TRUE;
+    }
+    Py_RETURN_FALSE;
+}
+"""
+
+# Used directly as an if-condition (truthiness); -1 read as true.
+TRISTATE_IF_CONDITION = """\
+#include <Python.h>
+
+static PyObject *
+in_if_condition(PyObject *self, PyObject *obj)
+{
+    if (PyObject_IsInstance(obj, (PyObject *)&PyList_Type)) {
+        Py_RETURN_TRUE;
+    }
+    Py_RETURN_FALSE;
+}
+"""
+
+# Correct: the -1 error case is checked before the result is used as a bool.
+TRISTATE_SAFE_CHECKED = """\
+#include <Python.h>
+
+static PyObject *
+checked(PyObject *self, PyObject *obj)
+{
+    int truth = PyObject_IsTrue(obj);
+    if (truth < 0) {
+        return NULL;
+    }
+    if (truth) {
+        Py_RETURN_TRUE;
+    }
+    Py_RETURN_FALSE;
+}
+"""
+
+
 class TestScanErrorPaths(unittest.TestCase):
     """Test error handling bug detection."""
 
@@ -179,9 +244,47 @@ class TestScanErrorPaths(unittest.TestCase):
         """Clean error handling produces no major findings."""
         with TempExtension({"clean.c": CLEAN_ERROR_HANDLING}) as root:
             result = error_paths.analyze(str(root / "clean.c"))
-            unchecked = [f for f in result["findings"]
-                         if f["type"] == "unchecked_pyarg_parse"]
+            unchecked = [
+                f for f in result["findings"] if f["type"] == "unchecked_pyarg_parse"
+            ]
             self.assertEqual(len(unchecked), 0)
+
+    def test_tristate_bool_confusion_logical_and(self):
+        """PyObject_IsTrue as an && operand is flagged (high confidence)."""
+        with TempExtension({"t.c": TRISTATE_LOGICAL_AND}) as root:
+            result = error_paths.analyze(str(root / "t.c"))
+            hits = [
+                f for f in result["findings"] if f["type"] == "tristate_bool_confusion"
+            ]
+            self.assertEqual(len(hits), 1)
+            self.assertEqual(hits[0]["confidence"], "high")
+            self.assertEqual(hits[0]["api_call"], "PyObject_IsTrue")
+
+    def test_tristate_bool_confusion_assigned_unchecked(self):
+        """Result stored in an int and used as bool without `< 0` is flagged."""
+        with TempExtension({"t.c": TRISTATE_ASSIGNED_UNCHECKED}) as root:
+            result = error_paths.analyze(str(root / "t.c"))
+            types = [f["type"] for f in result["findings"]]
+            self.assertIn("tristate_bool_confusion", types)
+
+    def test_tristate_bool_confusion_if_condition(self):
+        """A tri-state API used directly as an if-condition is flagged."""
+        with TempExtension({"t.c": TRISTATE_IF_CONDITION}) as root:
+            result = error_paths.analyze(str(root / "t.c"))
+            hits = [
+                f for f in result["findings"] if f["type"] == "tristate_bool_confusion"
+            ]
+            self.assertEqual(len(hits), 1)
+            self.assertEqual(hits[0]["api_call"], "PyObject_IsInstance")
+
+    def test_tristate_bool_confusion_checked_is_clean(self):
+        """A `< 0`-checked result produces no tristate finding (true negative)."""
+        with TempExtension({"t.c": TRISTATE_SAFE_CHECKED}) as root:
+            result = error_paths.analyze(str(root / "t.c"))
+            hits = [
+                f for f in result["findings"] if f["type"] == "tristate_bool_confusion"
+            ]
+            self.assertEqual(len(hits), 0)
 
     def test_extension_with_bugs(self):
         """EXTENSION_WITH_BUGS should trigger findings."""
@@ -232,12 +335,14 @@ class TestScanErrorPaths(unittest.TestCase):
         with TempExtension({"ok.c": NON_ERRORING_IN_ERROR_BLOCK}) as root:
             result = error_paths.analyze(str(root / "ok.c"))
             clobber_findings = [
-                f for f in result["findings"]
+                f
+                for f in result["findings"]
                 if f["type"] == "exception_clobbering"
                 and f.get("api_call") == "PyUnicode_CompareWithASCIIString"
             ]
             self.assertEqual(
-                clobber_findings, [],
+                clobber_findings,
+                [],
                 "PyUnicode_CompareWithASCIIString should not be flagged as "
                 "exception_clobbering; it does not raise exceptions "
                 "(Include/unicodeobject.h:957).",
@@ -256,16 +361,20 @@ class TestScanErrorPaths(unittest.TestCase):
         with TempExtension({"ok.c": NO_EXCEPTION_MACROS_IN_ERROR_BLOCK}) as root:
             result = error_paths.analyze(str(root / "ok.c"))
             false_positive_apis = {
-                "Py_INCREF", "PyErr_ExceptionMatches",
-                "PyCFunction_Check", "Py_TYPE",
+                "Py_INCREF",
+                "PyErr_ExceptionMatches",
+                "PyCFunction_Check",
+                "Py_TYPE",
             }
             leaked = [
-                f for f in result["findings"]
+                f
+                for f in result["findings"]
                 if f["type"] == "exception_clobbering"
                 and f.get("api_call") in false_positive_apis
             ]
             self.assertEqual(
-                leaked, [],
+                leaked,
+                [],
                 f"The following no-exception APIs leaked through the filter: "
                 f"{[f.get('api_call') for f in leaked]}. "
                 f"They should be listed in "
@@ -286,16 +395,20 @@ class TestScanErrorPaths(unittest.TestCase):
         with TempExtension({"ok.c": EXCEPTION_STATE_AND_GC_IN_ERROR_BLOCK}) as root:
             result = error_paths.analyze(str(root / "ok.c"))
             false_positive_apis = {
-                "PyErr_Fetch", "PyErr_Restore",
-                "PyObject_GC_Track", "PyObject_GC_UnTrack",
+                "PyErr_Fetch",
+                "PyErr_Restore",
+                "PyObject_GC_Track",
+                "PyObject_GC_UnTrack",
             }
             leaked = [
-                f for f in result["findings"]
+                f
+                for f in result["findings"]
                 if f["type"] == "exception_clobbering"
                 and f.get("api_call") in false_positive_apis
             ]
             self.assertEqual(
-                leaked, [],
+                leaked,
+                [],
                 f"The following exception-state/GC-track APIs leaked through "
                 f"the filter: {[f.get('api_call') for f in leaked]}. "
                 f"They should be listed in "
