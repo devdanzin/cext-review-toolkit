@@ -1487,3 +1487,139 @@ So **absence of a TSan line does not mean "safe"** — a dict-based race surface
 **Confirmed on**:
 - lxml 7.0.0a2 — the four manifestations all appeared in one review: ElementPath `_cache` (`elementpath.pxi:1017`) = **logical** corruption only (~34k `RuntimeError`/`KeyError`, **no** TSan line); objectify `_TYPE_CHECKS` **list** (`objectify.pyx:1254`) = clean TSan race (24); `ElementMaker._cache` (`objectify.pyx:1523`) = TSan **heap-use-after-free**; `_DEFAULT_NAMESPACE_PREFIXES` (`etree.pyx:156`) = TSan race **+ fatal interpreter crash** (`gc_free_threading.c` `refcount >= 0` assertion via the `dict_items` refcount). Reproducers: `reports/lxml_v2/reproducers/tier4_ft_tsan/`.
 
+---
+
+> **Running a TSan reproducer at all** (shared by Techniques 32–34). Several environment traps make
+> TSan *silently find nothing* rather than error out:
+> - **ASLR**: on a high-entropy-ASLR host TSan's shadow mapping fails (`FATAL: ThreadSanitizer:
+>   unexpected memory mapping`) or, worse, runs degraded — wrap the interpreter in `setarch -R`
+>   (disable randomization) or lower `vm.mmap_rnd_bits`.
+> - **Address-space rlimit**: TSan reserves terabytes of shadow, so a finite `RLIMIT_AS` makes it
+>   re-exec degraded — run with `ulimit -v unlimited`.
+> - **Symbolizer hang**: `llvm-symbolizer` honours `DEBUGINFOD_URLS`; if it points at an
+>   unreachable server the process appears to hang for minutes — clear it (`DEBUGINFOD_URLS=`).
+> - **Clean pass/fail signal**: `TSAN_OPTIONS='halt_on_error=1:exitcode=66'` makes "a race happened"
+>   a process **exit code** (66) you can count over many runs, instead of grepping stderr.
+
+## Technique 33: Sustaining the racing writer to reproduce a *one-shot* read race
+
+**Triggers**: a TSan data race where one side happens exactly **once** per process — an
+interpreter/extension **finalization** or teardown path, a **lazy-init** on first use, an
+`atexit`/`tp_dealloc` field write — racing a concurrent access from another thread. These are the
+hardest races to reproduce: the one-shot side fires at an unpredictable instant, and if the *other*
+side isn't touching the same location at that instant, TSan sees nothing.
+
+**Bug class**: unlocked read/write of shared state on a code path that runs once (module teardown,
+`Py_Finalize`, a singleton's first construction, a `detach`/`close` that nulls a field).
+
+**The mistake that fails**: firing the other side as a **one-time burst** *before* the one-shot
+event. To race a read that happens during finalization, spawning 400 threads at startup and letting
+them exit does nothing — they are all long dead before finalization, so no thread is touching the
+shared field when the one-shot read fires. (Observed: **0 hits in 14 runs**.)
+
+**The fix — run the racing side *continuously* through the one-shot window**, so an unsynchronized
+access is always in TSan's recent per-thread history when the one-shot side executes:
+
+```python
+# Race: a finalization-time UNLOCKED read of interp->threads.head vs a lock-held write of the same
+# field. The read happens once, on the main thread, during Py_Finalize. Keep OTHER threads
+# creating/destroying thread-states CONTINUOUSLY right through finalization so a write is always live.
+import sys, _thread, threading, time
+assert not sys._is_gil_enabled()
+
+def _boom(): raise RuntimeError("reach the one-shot path")
+threading._shutdown = _boom          # arm the gate so finalization runs the handler with the race
+
+_run = True
+def churn():
+    while _run:
+        try: _thread.start_new_thread(lambda: None, ())   # each create AND exit writes the field
+        except RuntimeError: time.sleep(0)
+for _ in range(6):
+    _thread.start_new_thread(churn, ())
+time.sleep(0.1)                       # let the churn saturate
+# fall off the end -> finalization -> the one-shot read races the churn's writes
+```
+
+Result: **~44 %/run** (loop it for reliability), up from 0.
+
+**Why it works**: TSan flags a race when two unsynchronized accesses to the same address have no
+happens-before edge and both sit within `history_size`. A continuously-active writer guarantees a
+qualifying write is in the window whenever the one-shot read executes; a one-time burst does not.
+
+**Gotchas**:
+- Use the **cheapest** churn (`_thread.start_new_thread`, not `threading.Thread`) so the racing
+  access rate is high and per-op overhead low.
+- The churn must run on **other** threads — an access on the same thread as the one-shot side is
+  happens-before-ordered and cannot race.
+- If the one-shot path is **gated** (only runs when an exception is set, a flag is on, a module is
+  imported), arm that condition first — here, override `threading._shutdown` to raise so
+  finalization reaches the handler.
+- Bump `history_size` (`TSAN_OPTIONS=...:history_size=7`) if the two accesses are far apart in time.
+
+**When to use this**: finalization / teardown / `atexit` / `tp_dealloc` races; first-call lazy-init
+races; any race where one side is a single event you cannot put in a loop.
+
+**Confirmed on**: CPython 3.16 free-threaded `--with-thread-sanitizer` —
+`handle_thread_shutdown_exception`'s unlocked `assert(interp->threads.head != NULL)` before
+`_PyEval_StopTheWorld`, racing a `HEAD_LOCK`-held thread-state create/delete write of that field
+(python/cpython#153852, TSAN-0034): **0/14** with a startup burst → **~44 %/run** with continuous churn.
+
+## Technique 34: Barrier-isolating the target race pair from a competing setup write
+
+**Triggers**: reproducing race **A** (the one you want) requires **setup mutation** of the shared
+object between attempts, and that setup is itself a racing write **B**. Under `halt_on_error=1` TSan
+stops at the *first* race, so it keeps reporting B and you never see A.
+
+**Bug class**: any "reset the state, then race it" reproducer where the reset is a mutation — most
+often, a race that only manifests when the shared object is in a particular state (e.g. *unsorted*,
+*non-empty*, *first-touch*) that a plain reader can't restore.
+
+**Concrete example**: `list.sort()`'s in-place `binarysort` writes race a concurrent list read — but
+`list.sort()` only does real `binarysort` work on **unsorted** input, so you must re-scramble the
+shared list between sorts. A re-scramble (`L[:] = ...`) is itself a write that races the readers (a
+*different* list bug), so TSan halts on the re-scramble, not the sort.
+
+**The fix — a `threading.Barrier` that confines the setup write to a phase where the other threads
+are parked**, so only the target pair overlaps in the active phase:
+
+```python
+import threading
+enter, leave = threading.Barrier(NR + 1), threading.Barrier(NR + 1)
+
+def reader():
+    for _ in range(ROUNDS):
+        enter.wait()          # (2) released together with the driver
+        for _x in L: pass     # <-- overlaps ONLY the sort, nothing else
+        leave.wait()          # (3) regroup
+
+def driver():
+    for _ in range(ROUNDS):
+        L[:] = SCRAMBLED      # (1) setup write while readers are PARKED at enter -> races nobody
+        enter.wait()          # release readers
+        L.sort()              # the target write, overlapping the readers
+        leave.wait()
+```
+
+The re-scramble at (1) runs while every reader is blocked at `enter.wait()`, so it races nothing; the
+barrier then releases readers and driver *together*, so the only concurrent pair in the active phase
+is sort-vs-read. Result: **8/8 (100 %)**, and the SUMMARY is unambiguously the `binarysort` write vs
+the reader — no B-race noise, one clean signature.
+
+**Gotchas**:
+- Between `leave` and the next `enter`, the parked threads must not touch the shared object — keep
+  the readers' loop body to *only* the read, and put the setup write in the driver's parked window.
+- Keep the target write **in place**: `list.sort()` with **no** `key=` sorts the list's own backing
+  array (what the readers race); `key=` sorts a separate keys array and won't reproduce it.
+- Size the shared object so the target op's window is wide (bigger list → longer sort → wider race
+  window → higher hit rate).
+
+**When to use this**: whenever the reproducer needs a between-attempts mutation that competes with
+the race you're isolating; also to force a **clean single-signature** report (one pair) instead of
+whichever race happens to fire first under `halt_on_error=1`.
+
+**Confirmed on**: CPython 3.16 free-threaded `--with-thread-sanitizer` — concurrent `list.sort()`
+(`binarysort`, `listobject.c`) vs a lock-free list read (`_PyList_GetItemRef` / `_Py_TryXGetRef`)
+(python/cpython#153852, TSAN-0014): **~15–30 %/run** with a shrinkray-minimized real-module vehicle →
+**8/8** with the barrier-isolated plain-`list` synthetic.
+
