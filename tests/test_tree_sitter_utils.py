@@ -56,6 +56,74 @@ my_func(PyObject *self, PyObject *args)
         self.assertEqual(funcs[0]["name"], "my_func")
         self.assertIn("static", funcs[0]["return_type"])
 
+    def test_extract_functions_inside_ifndef_include_guard(self):
+        """Functions whose whole body sits inside an #ifndef include guard are found.
+
+        Regression: header-only C extensions (e.g. multidict's _multilib/*.h) wrap
+        their entire body in `#ifndef FOO_H / #define FOO_H ... #endif`, which parses
+        as a single preproc_ifdef node. A root-children-only walk found 0 functions.
+        """
+        code = """\
+#ifndef _MYEXT_HASHTABLE_H
+#define _MYEXT_HASHTABLE_H
+
+static inline int
+ht_insert(ht_t *ht, PyObject *key)
+{
+    return 0;
+}
+
+static PyObject *
+ht_lookup(ht_t *ht, PyObject *key)
+{
+    Py_RETURN_NONE;
+}
+
+#endif
+"""
+        tree = ts.parse_string(code)
+        funcs = ts.extract_functions(tree, code.encode("utf-8"))
+        names = [f["name"] for f in funcs]
+        self.assertIn("ht_insert", names)
+        self.assertIn("ht_lookup", names)
+        self.assertEqual(len(funcs), 2)
+
+    def test_extract_functions_nested_preproc_conditional(self):
+        """A function nested in #if inside the #ifndef guard is still found."""
+        code = """\
+#ifndef _MYEXT_COMPAT_H
+#define _MYEXT_COMPAT_H
+
+#if PY_VERSION_HEX >= 0x030C0000
+static PyObject *
+compat_new(PyTypeObject *tp)
+{
+    return NULL;
+}
+#else
+static PyObject *
+compat_new_legacy(PyTypeObject *tp)
+{
+    return NULL;
+}
+#endif
+
+#endif
+"""
+        tree = ts.parse_string(code)
+        names = [f["name"] for f in ts.extract_functions(tree, code.encode("utf-8"))]
+        # Both branches of the #if are surfaced (tree-sitter keeps both).
+        self.assertIn("compat_new", names)
+        self.assertIn("compat_new_legacy", names)
+
+    def test_extract_functions_no_guard_unaffected(self):
+        """Plain translation units without a guard are unchanged by the descent."""
+        tree = ts.parse_string(MINIMAL_EXTENSION)
+        funcs = ts.extract_functions(tree, MINIMAL_EXTENSION.encode("utf-8"))
+        names = [f["name"] for f in funcs]
+        self.assertIn("myext_hello", names)
+        self.assertIn("PyInit_myext", names)
+
     def test_extract_functions_body_content(self):
         """Function body is extracted correctly."""
         tree = ts.parse_string(MINIMAL_EXTENSION)
