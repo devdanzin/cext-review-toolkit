@@ -166,6 +166,46 @@ def _get_function_declarator(node: tree_sitter.Node) -> tree_sitter.Node | None:
     return None
 
 
+# Node types that WRAP function definitions rather than being them. When
+# collecting top-level definitions we descend into these so nested functions
+# are still found. The preproc_* entries matter for header-only C extensions:
+# an entire header body wrapped in an "#ifndef FOO_H ... #endif" include guard
+# parses as a single preproc_ifdef node, so a root-children-only walk would
+# find ZERO functions in it.
+_WRAPPER_NODE_TYPES = frozenset(
+    {
+        "linkage_specification",  # extern "C" { ... }
+        "namespace_definition",  # namespace X { ... }
+        "preproc_ifdef",  # #ifndef / #ifdef ... #endif  (include guards)
+        "preproc_if",  # #if ... #endif
+        "preproc_elif",  # #elif ...
+        "preproc_else",  # #else ...
+    }
+)
+
+
+def _collect_top_level_nodes(nodes: list) -> list:
+    """Flatten a node list, descending into extern-C / namespace / preprocessor
+    wrapper nodes so function definitions nested inside them are still found.
+
+    extern "C" and namespace hold their members under a ``body`` field;
+    preprocessor conditionals hold them as direct children. Recurses so nested
+    wrappers (e.g. an ``#if PY_VERSION_HEX`` inside an ``#ifndef`` guard) work.
+    """
+    result = []
+    for node in nodes:
+        if node.type in ("linkage_specification", "namespace_definition"):
+            body = node.child_by_field_name("body")
+            result.extend(
+                _collect_top_level_nodes(body.children if body else node.children)
+            )
+        elif node.type in _WRAPPER_NODE_TYPES:
+            result.extend(_collect_top_level_nodes(node.children))
+        else:
+            result.append(node)
+    return result
+
+
 def extract_functions(tree: tree_sitter.Tree, source_bytes: bytes) -> list[dict]:
     """Extract all function definitions from a parse tree.
 
@@ -183,18 +223,12 @@ def extract_functions(tree: tree_sitter.Tree, source_bytes: bytes) -> list[dict]
     functions = []
     root = tree.root_node
 
-    # Collect top-level nodes, descending into extern "C" {} and namespace {}
-    # blocks which wrap function definitions in C++ files.
-    top_nodes = []
-    for node in root.children:
-        if node.type in ("linkage_specification", "namespace_definition"):
-            body = node.child_by_field_name("body")
-            if body:
-                top_nodes.extend(body.children)
-            else:
-                top_nodes.extend(node.children)
-        else:
-            top_nodes.append(node)
+    # Collect top-level nodes, descending into extern "C" {} / namespace {}
+    # blocks and #ifndef/#ifdef/#if include guards + conditionals, all of which
+    # wrap function definitions. Without the preproc descent, a header-only
+    # extension whose entire body sits inside an "#ifndef FOO_H" guard yields
+    # zero functions.
+    top_nodes = _collect_top_level_nodes(root.children)
 
     for node in top_nodes:
         if node.type != "function_definition":
